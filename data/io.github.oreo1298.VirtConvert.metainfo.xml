@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.oreo1298.VirtConvert</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>VirtConvert</name>
+  <summary>Convert Hyper-V disks for VirtualBox and back</summary>
+  <description>
+    <p>
+      VirtConvert turns Hyper-V disk images (VHD, VHDX) into formats VirtualBox uses (VDI, VMDK),
+      and VirtualBox disks back into VHD or VHDX for Hyper-V and Azure.
+    </p>
+    <ul>
+      <li>Hyper-V checkpoints (.avhdx, .avhd) and VirtualBox snapshots are merged with their parents into one disk</li>
+      <li>Every copy can be compared with its source, byte for byte, before it is saved</li>
+      <li>Shows whether the disk boots with UEFI or BIOS, and what to set in VirtualBox or Hyper-V</li>
+      <li>Dynamic or fixed disks, stream-optimized VMDK for OVA appliances, Azure-ready VHD</li>
+      <li>Converts several images in one go; a command-line interface for scripts</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.oreo1298.VirtConvert.desktop</launchable>
+  <url type="homepage">https://github.com/oreo1298/VirtConvert</url>
+  <url type="bugtracker">https://github.com/oreo1298/VirtConvert/issues</url>
+  <developer id="io.github.oreo1298">
+    <name>oreo1298</name>
+  </developer>
+  <screenshots>
+    <screenshot type="default">
+      <caption>A Hyper-V checkpoint ready to be merged and converted for VirtualBox</caption>
+      <image>https://raw.githubusercontent.com/oreo1298/VirtConvert/main/docs/screenshots/main-dark.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Converting a VirtualBox disk back to VHDX for Hyper-V</caption>
+      <image>https://raw.githubusercontent.com/oreo1298/VirtConvert/main/docs/screenshots/back-light.png</image>
+    </screenshot>
+  </screenshots>
+  <provides>
+    <binary>virtconvert</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.0.0" date="2026-10-06"/>
+  </releases>
+</component>

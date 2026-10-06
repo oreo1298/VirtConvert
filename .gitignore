@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+*.part
+# makepkg output when building from the repository root
+/src/
+/pkg/
+/*.pkg.tar*

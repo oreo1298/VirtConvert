@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=VirtConvert
+GenericName=Disk Image Converter
+Comment=Convert Hyper-V disks (VHD, VHDX) for VirtualBox (VDI, VMDK) and back
+Exec=virtconvert %F
+Icon=io.github.oreo1298.VirtConvert
+Terminal=false
+Categories=System;Emulator;Qt;
+Keywords=vhd;vhdx;avhdx;vdi;vmdk;virtualbox;hyper-v;hyperv;qemu-img;disk;image;convert;virtual machine;checkpoint;snapshot;
+MimeType=application/x-vhd-disk;application/x-vhdx-disk;application/x-vmdk-disk;application/x-virtualbox-vdi;application/x-virtualbox-vhd;application/x-virtualbox-vhdx;application/x-virtualbox-vmdk;
+StartupNotify=true
+StartupWMClass=virtconvert

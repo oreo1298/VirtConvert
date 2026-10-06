@@ -1,0 +1,19 @@
+VirtConvert
+===========
+
+VirtConvert is an independent project. It is not affiliated with, endorsed by or sponsored by
+Microsoft (Hyper-V, Azure), Oracle (VirtualBox) or Broadcom/VMware; those names appear only to
+describe the disk image formats VirtConvert works with.
+
+Tools it runs (not bundled)
+---------------------------
+
+* qemu-img from the QEMU project, GPL-2.0-or-later, https://www.qemu.org — writes the converted
+  disk images and compares them with their sources.
+
+VirtConvert reads VHD, VHDX and VDI headers and differencing images itself, following the
+published specifications (Microsoft "Virtual Hard Disk Image Format Specification" and
+[MS-VHDX], and VirtualBox's VDI layout).
+
+The design system of the app (theme.py, icons.py, worker.py and parts of widgets.py) is shared
+with EZP2019Linux, DiskHealth, CloneAndRecover and the other applications by the same author.
