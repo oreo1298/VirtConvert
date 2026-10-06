@@ -34,12 +34,12 @@ from .convert import (
     source_files,
 )
 from .errors import ConvertError, OperationCancelled, VerifyError
-from .images import inspect_image
+from .images import HEAD_BYTES, inspect_image
 from .nbd import NbdServer
-from .partitions import PartitionTable, gpt_room, move_backup_gpt
+from .partitions import GPT_ENTRIES, PartitionTable, analyze, gpt_room, move_backup_gpt
 from .probe import ImageInfo
 from .qemu import QemuImg, limited_spec, nbd_spec
-from .util import MIB, file_signature, human_bytes, round_up
+from .util import MIB, file_signature, human_bytes, round_up, same_file
 
 TAIL = MIB      # cleared at the end of a disk larger than the image
 
@@ -55,7 +55,7 @@ class DiskWrite:
     force_parent: bool = False
     candidates: list[Path] = field(default_factory=list)
     elevate: str = "auto"                  # how to open the disks: pkexec, sudo, auto (devices.elevator)
-    expect: tuple[int, str, str] | None = None     # (size, model, serial) of the disk the person chose
+    expect: tuple | None = None            # disk_identity() of the disk the person chose
 
 
 @dataclass
@@ -96,6 +96,9 @@ class WritePlan:
             label = f" “{p.label}”" if p.label else ""
             what = ", ".join(x for x in (p.fstype, human_bytes(p.size)) if x)
             parts.append(f"{p.name}{label} ({what})")
+        if not parts and disk.fstype:
+            label = f" “{disk.label}”" if disk.label else ""
+            return f"a {disk.fstype} file system{label} on the whole disk"
         return ", ".join(parts) if parts else "no partitions"
 
 
@@ -109,17 +112,22 @@ class WriteOutcome:
     fitted: bool = False       # the GPT was moved to the disk's end
 
 
-def disk_identity(disk: devices.PhysicalDisk) -> tuple[int, str, str]:
-    """What tells the disk the person chose from one plugged in under the same name meanwhile."""
-    return disk.size, disk.model, disk.serial
+def disk_identity(disk: devices.PhysicalDisk) -> tuple[int, str, str, int]:
+    """What tells the disk the person chose from one plugged in under the same name meanwhile: the
+    kernel numbers every disk and medium it sees (diskseq; two cards in one reader have the reader's
+    model and serial number)."""
+    return disk.size, disk.model, disk.serial, disk.seq
 
 
 def partitions_end(table: PartitionTable | None) -> int | None:
-    """Where the last partition ends (with the room a GPT needs after it), or None without any."""
-    if table is None or table.scheme not in ("gpt", "mbr") or not table.partitions:
+    """Where the last partition ends (with the room a GPT's backup needs after it), or None without
+    any, or when only their sizes are known."""
+    if table is None or table.scheme not in ("gpt", "mbr") or not table.partitions or not table.positions_known:
         return None
     end = max(p.start + p.size for p in table.partitions)
-    return end + gpt_room(table.sector_size) if table.scheme == "gpt" else end
+    if table.scheme == "gpt":
+        end += gpt_room(table.sector_size, table.entries_bytes or GPT_ENTRIES * 128)
+    return end
 
 
 def make_write_plan(job: DiskWrite, qemu: QemuImg | None, info: ImageInfo | None = None,
@@ -144,10 +152,18 @@ def make_write_plan(job: DiskWrite, qemu: QemuImg | None, info: ImageInfo | None
         plan.errors.append(str(exc))
         return plan
     plan.disk = disk
-    if disk.kind not in ("disk", "loop"):
+    if disk.kind == "part":
         whole = ", ".join(sorted(devices.base_disks(job.disk))) or "the disk it is on"
         plan.errors.append(f"{disk.name} is a partition. Choose the whole disk ({whole}): the virtual disk brings "
                            "its own partitions.")
+        return plan
+    if disk.kind not in ("disk", "loop"):
+        plan.errors.append(f"{disk.name} is not a disk but a {disk.kind} device. 'virtconvert disks' lists the "
+                           "disks.")
+        return plan
+    if disk.name.startswith("nbd"):
+        plan.errors.append(f"{disk.name} is a network block device: what it writes to can't be checked (it could "
+                           "be the image itself).")
         return plan
     if disk.size <= 0:
         plan.errors.append(f"{disk.name} has no medium (an empty card reader?).")
@@ -158,7 +174,10 @@ def make_write_plan(job: DiskWrite, qemu: QemuImg | None, info: ImageInfo | None
     if disk.read_only:
         plan.errors.append(f"{disk.title} is write-protected (a memory card's lock switch?).")
     shown = ", ".join(disk.mountpoints[:4]) + ("…" if len(disk.mountpoints) > 4 else "")
-    if disk.system:
+    if {m for m in disk.mountpoints if m in devices.SYSTEM_MOUNTS} == {"[SWAP]"}:
+        plan.errors.append(f"{disk.title} is used as swap space: turn that off first (swapoff, or your "
+                           "distribution's swap settings).")
+    elif disk.system:
         plan.errors.append(f"{disk.title} holds the running system (in use at {shown}): it can't be "
                            "overwritten. To put a virtual disk on it, start the computer from a live USB "
                            "system and write it from there.")
@@ -177,7 +196,10 @@ def make_write_plan(job: DiskWrite, qemu: QemuImg | None, info: ImageInfo | None
             plan.errors.append("The source and the target are the same disk.")
     else:
         files = source_files(info)
-        if any(devices.disks_holding(f) & target for f in files):
+        backing = devices.backing_file(job.disk)
+        if backing and any(same_file(backing, f) for f in files):
+            plan.errors.append(f"{disk.name} is a loop device of {Path(backing).name}, the image itself.")
+        elif any(devices.disks_holding(f) & target for f in files):
             plan.errors.append(f"{info.name} is stored on {disk.title}, so it would be overwritten while it is "
                                "read. Copy it to another drive first.")
 
@@ -229,22 +251,38 @@ def make_write_plan(job: DiskWrite, qemu: QemuImg | None, info: ImageInfo | None
 def write_to_disk(plan: WritePlan, qemu: QemuImg, progress: ProgressFn | None = None,
                   cancel: CancelFn | None = None, log: Callable[[str], None] | None = None) -> WriteOutcome:
     """Erase the disk and write the image onto it, compare, and fit the partition table to the
-    disk. Cancelling leaves the disk partly written."""
+    disk. Cancelling raises OperationCancelled with .written: false while the disk is only partly
+    written, true when only the comparing (and fitting) was left out."""
     if not plan.ok or plan.disk is None:
         raise ConvertError(plan.errors[0] if plan.errors else "Nothing to write to.")
-    job, info, disk, size = plan.job, plan.info, plan.disk, plan.size
+    disk = plan.disk
     progress = progress or (lambda *_: None)
     cancel = cancel or (lambda: False)
     log = log or (lambda _m: None)
     started = time.monotonic()
-    signatures = {p: file_signature(p) for p in source_files(info)}
+    state = {"written": False}
+    try:
+        verified, fitted = _write(plan, qemu, progress, cancel, log, state)
+    except OperationCancelled as exc:
+        exc.written = state["written"]
+        raise
+    return WriteOutcome(disk=Path(disk.path), title=disk.title, size=plan.size,
+                        seconds=time.monotonic() - started, verified=verified, fitted=fitted)
 
+
+def _write(plan: WritePlan, qemu: QemuImg, progress: ProgressFn, cancel: CancelFn, log: Callable[[str], None],
+           state: dict) -> tuple[bool, bool]:
+    job, info, disk, size = plan.job, plan.info, plan.disk, plan.size
+    signatures = {p: file_signature(p) for p in source_files(info)}
     for device, mountpoint in plan.unmount:
         log(f"Unmounting {mountpoint} ({device})")
         devices.unmount(device, mountpoint, job.elevate)
     if cancel():
         raise OperationCancelled()
     with open_source(info, info.virtual_size, plan.uses_reader, job.elevate, cancel, log) as (source, source_error):
+        if size < info.virtual_size:
+            _check_partitions_fit(qemu, source, plan)
+        image = limited_spec(source, size) if size < info.virtual_size else source
         log(f"Opening {disk.path} for writing")
         fd = devices.open_device(disk.path, job.elevate, cancel, write=True)
         try:
@@ -254,8 +292,12 @@ def write_to_disk(plan: WritePlan, qemu: QemuImg, progress: ProgressFn | None = 
             raise
         server = None
         try:
+            # the password dialogs are over and the disk is held: is it still the one that was chosen?
+            now = devices.disk_info(disk.path)
+            if disk_identity(now) != disk_identity(disk) or writer.device_size != disk.size:
+                raise ConvertError(f"{disk.path} is not the disk that was chosen any more (was it unplugged, and "
+                                   "another one plugged in?). Nothing was written.")
             server = NbdServer(writer, writable=True).start()
-            image = limited_spec(source, size) if size < info.virtual_size else source
 
             def failed(exc: Exception | None = None) -> None:
                 message = source_error() or (str(server.error) if server.error is not None else None)
@@ -276,6 +318,7 @@ def write_to_disk(plan: WritePlan, qemu: QemuImg, progress: ProgressFn | None = 
             log("Writing what is still in the computer's memory to the disk")
             progress("Finishing", 0, 0)
             writer.flush()
+            state["written"] = True
             check_unchanged(signatures)
             verified = False
             if job.verify and plan.can_verify:
@@ -284,8 +327,12 @@ def write_to_disk(plan: WritePlan, qemu: QemuImg, progress: ProgressFn | None = 
                 log("Reading the disk back and comparing it with the image")
                 writer.drop_cache()      # read the disk, not what the computer still remembers of it
                 progress("Verifying", 0, size)
-                same, detail = qemu.compare(image, nbd_spec(server.socket_path, server.export),
-                                            progress=stage("Verifying"), cancel=cancel)
+                try:
+                    same, detail = qemu.compare(image, nbd_spec(server.socket_path, server.export),
+                                                progress=stage("Verifying"), cancel=cancel)
+                except ConvertError as exc:
+                    failed(exc)
+                    raise
                 failed()
                 if not same:
                     raise VerifyError(f"{disk.title} doesn't hold what was written: {detail} The disk may be "
@@ -302,8 +349,23 @@ def write_to_disk(plan: WritePlan, qemu: QemuImg, progress: ProgressFn | None = 
             if server is not None:
                 server.stop()
             writer.close()
-    return WriteOutcome(disk=Path(disk.path), title=disk.title, size=size, seconds=time.monotonic() - started,
-                        verified=verified, fitted=fitted)
+    return verified, fitted
+
+
+def _check_partitions_fit(qemu: QemuImg, source: str, plan: WritePlan) -> None:
+    """Before writing part of a larger image: read its partition table itself (the plan may only
+    have had lsblk's sizes, or a guess at the sector size) and make sure the partitions end on the
+    disk."""
+    try:
+        head = qemu.read_head(source, HEAD_BYTES)
+    except ConvertError as exc:
+        raise ConvertError(f"The partition table of {plan.info.name} couldn't be read: {exc}") from None
+    logical = plan.info.logical_sector if plan.info.logical_sector != 512 else None
+    end = partitions_end(analyze(head, logical))
+    if end is None or end > plan.disk.size:
+        reach = f": its partitions end at {human_bytes(end)}" if end is not None else ""
+        raise ConvertError(f"{plan.info.name} doesn't fit on {plan.disk.title}{reach}. Nothing was written. Shrink "
+                           "the partitions inside the virtual machine first.")
 
 
 def _fit_to_disk(writer: devices.DeviceWriter, plan: WritePlan, log: Callable[[str], None]) -> bool:
@@ -319,6 +381,11 @@ def _fit_to_disk(writer: devices.DeviceWriter, plan: WritePlan, log: Callable[[s
     moved = move_backup_gpt(writer.read, writer.write, disk_size, table.sector_size)
     if moved:
         log("Moved the backup partition table to the end of the disk")
+    elif plan.size < plan.info.virtual_size:
+        # its backup and last usable sector lie past the end: Linux wouldn't find the partitions
+        raise ConvertError(f"The partition table couldn't be fitted to {plan.disk.title}, which is smaller than the "
+                           "virtual disk: computers won't find its partitions. Shrink the partitions inside the "
+                           "virtual machine, then write it again.")
     else:
         log("The partition table couldn't be fitted to the disk's size; GParted or 'sgdisk -e' can do it")
     return moved

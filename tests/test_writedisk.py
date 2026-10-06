@@ -21,7 +21,7 @@ from virtconvert.core.errors import ConvertError, VerifyError
 from virtconvert.core.nbd import NbdServer
 from virtconvert.core.partitions import analyze, move_backup_gpt
 from virtconvert.core.qemu import nbd_spec, spec
-from virtconvert.core.writedisk import DiskWrite, make_write_plan, write_to_disk
+from virtconvert.core.writedisk import DiskWrite, disk_identity, make_write_plan, partitions_end, write_to_disk
 
 LINUX = "0fc63daf-8483-4772-8e79-3d69d8477de4"
 ESP = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
@@ -204,7 +204,11 @@ def test_refusals(qemu, fake_disk, tmp_path, monkeypatch):
     assert "4096-byte sectors" in errors(fake_disk(8 * MIB, "sdf", logical_sector=4096))[0]
     disk = fake_disk(8 * MIB, "sdg")
     assert "not the disk that was chosen" in errors(disk, expect=(8 * MIB, "Other", "X"))[0]
-    assert not errors(disk, expect=(8 * MIB, "Test Stick", "T-1"))
+    assert not errors(disk, expect=disk_identity(disk))
+    assert "not a disk but a lvm device" in errors(fake_disk(8 * MIB, "dm-1", kind="lvm"))[0]
+    assert "network block device" in errors(fake_disk(8 * MIB, "nbd0"))[0]
+    assert "used as swap space" in errors(fake_disk(8 * MIB, "sdh", mountpoints=["[SWAP]"]))[0]
+    assert "running system" in errors(fake_disk(8 * MIB, "sdi", mountpoints=["/run/archiso/bootmnt"]))[0]
     monkeypatch.setattr(devices, "disks_holding", lambda p: {"sdg"})
     assert "stored on Test Stick (sdg), so it would be overwritten" in errors(disk)[0]
     assert "is not a disk" in make_write_plan(DiskWrite(source, tmp_path), qemu).errors[0]
@@ -433,3 +437,134 @@ def test_write_a_disk_of_an_appliance(qemu, fake_disk, tmp_path, capsys):
         cli.main(["write", str(tmp_path / "app.ova"), disk.path, "--yes"])
     assert cli.main(["write", "-q", str(tmp_path / "app.ova"), disk.path, "--yes", "--member", "b.vhd"]) == 0
     assert Path(disk.path).read_bytes()[:SECTOR] == b"B" * SECTOR
+
+
+def test_partitions_must_be_known_to_fit(qemu, fake_disk, tmp_path, monkeypatch):
+    """A smaller disk only when the partitions' real positions are known and they end on it."""
+    data = bytearray(64 * MIB)
+    for at, chunk in gpt_sectors(64 * MIB, [(2048, 61439, LINUX, "One"), (61440, 122879, LINUX, "Two")]).items():
+        data[at:at + len(chunk)] = chunk
+    source = fake_disk(64 * MIB, name="sdx")
+    Path(source.path).write_bytes(bytes(data))
+    target = fake_disk(40 * MIB, name="sdy")
+    plan = make_write_plan(DiskWrite(Path(source.path), Path(target.path)), qemu)
+    assert "partitions end at 60 MB" in plan.errors[0]              # read from the disk itself
+    # what lsblk says without /sys: sizes only
+    source.table = "gpt"
+    source.partitions = [devices.DiskPart("sdx1", "/dev/sdx1", 29 * MIB, parttype=LINUX),
+                         devices.DiskPart("sdx2", "/dev/sdx2", 30 * MIB, parttype=LINUX)]
+    table = source.partition_table()
+    assert not table.positions_known and partitions_end(table) is None
+    monkeypatch.setattr(devices.os, "access", lambda *a: False)
+    info = devices.info_from_disk(source, Path(source.path))       # not readable without a password
+    plan = make_write_plan(DiskWrite(Path(source.path), Path(target.path)), qemu, info)
+    assert "too small: 40 MB for a 64 MB virtual disk. Shrink" in plan.errors[0]
+    # a plan that believes they fit is stopped by the partition table itself, before anything is written
+    monkeypatch.undo()
+    plan.errors.clear()
+    plan.size = target.size
+    with pytest.raises(ConvertError, match="doesn't fit on Test Stick \\(sdy\\): its partitions end at 60 MB. "
+                                           "Nothing was written"):
+        write_to_disk(plan, qemu)
+    assert Path(target.path).read_bytes() == b"\xee" * (40 * MIB)
+
+
+def test_room_for_a_larger_gpt(qemu, fake_disk, tmp_path):
+    """The backup of a GPT with 256 entries needs 65 sectors at the end, not 33."""
+    if not shutil.which("sfdisk"):
+        pytest.skip("sfdisk is not installed")
+    raw = tmp_path / "big-table.raw"
+    with open(raw, "wb") as f:
+        f.truncate(32 * MIB)
+    script = "label: gpt\ntable-length: 256\nfirst-lba: 2048\nstart=2048, size=30672, type=L\n"
+    subprocess.run(["sfdisk", "-q", str(raw)], input=script, text=True, check=True, capture_output=True)
+    small = fake_disk(16 * MIB)                     # 32768 sectors: the partition ends at 32719
+    plan = make_write_plan(DiskWrite(raw, Path(small.path)), qemu)
+    assert plan.info.partitions.entries_bytes == 256 * 128
+    assert "too small" in plan.errors[0]
+
+
+def test_mbr_with_4k_sectors():
+    head = bytearray(128 * 1024)
+    head[0:SECTOR] = mbr_sector([(256, 15360, 0x83, True)])[0]
+    assert analyze(bytes(head)).partitions[0].start == 256 * 512
+    table = analyze(bytes(head), 4096)
+    assert table.sector_size == 4096 and table.partitions[0].start == MIB and table.partitions[0].size == 60 * MIB
+
+
+def test_another_disk_under_the_same_name(qemu, fake_disk, tmp_path):
+    """Checked again once the disk is open (after the password dialogs): a stick swapped meanwhile
+    is not written."""
+    import dataclasses
+    source = image(qemu, tmp_path, bytes(gpt_disk(4 * MIB, 6000)), "qcow2")
+    disk = fake_disk(8 * MIB, seq=7)
+    plan = make_write_plan(DiskWrite(source, Path(disk.path)), qemu)
+    fake_disk.disks[disk.path] = dataclasses.replace(disk, seq=8)
+    with pytest.raises(ConvertError, match="is not the disk that was chosen any more.*Nothing was written"):
+        write_to_disk(plan, qemu)
+    assert Path(disk.path).read_bytes() == b"\xee" * (8 * MIB)
+
+
+def test_cancelling_tells_how_far_it_got(qemu, fake_disk, tmp_path):
+    from virtconvert.core.errors import OperationCancelled
+    source = image(qemu, tmp_path, os.urandom(4 * MIB), "qcow2")
+    disk = fake_disk(4 * MIB)
+    plan = make_write_plan(DiskWrite(source, Path(disk.path)), qemu)
+    with pytest.raises(OperationCancelled) as caught:
+        write_to_disk(plan, qemu, cancel=lambda: True)
+    assert caught.value.written is False
+    stages = []
+    with pytest.raises(OperationCancelled) as caught:
+        write_to_disk(plan, qemu, progress=lambda stage, *_: stages.append(stage),
+                      cancel=lambda: "Finishing" in stages)
+    assert caught.value.written is True
+
+
+def test_closing_waits_for_a_request(tmp_path):
+    import threading
+    path = tmp_path / "disk"
+    path.write_bytes(b"\xee" * (64 * MIB))
+    writer = devices.DeviceWriter(os.open(path, os.O_RDWR), 64 * MIB, "Test (sdz)")
+    outcome = []
+
+    def zero():
+        try:
+            writer.zero(0, 64 * MIB)
+            outcome.append("done")
+        except ConvertError as exc:
+            outcome.append(str(exc))
+
+    thread = threading.Thread(target=zero)
+    thread.start()
+    writer.close()
+    thread.join()
+    assert writer.fd == -1 and outcome[0] in ("done", "Writing to Test (sdz) was stopped.")
+
+
+def test_open_errors():
+    import errno
+    assert "is in use: it or a partition on it is mounted" in devices._open_error("/dev/sdz", errno.EBUSY, "", True)
+    assert "write-protected" in devices._open_error("/dev/sdz", errno.EROFS, "", True)
+    assert devices._open_error("/dev/sdz", errno.EACCES, "Permission denied", True) == \
+        "Cannot open /dev/sdz: Permission denied"
+    assert "is gone" in devices._open_error("/dev/sdz", errno.ENOENT, "", False)
+
+
+def test_erased_describes_a_whole_disk_file_system(qemu, fake_disk, tmp_path):
+    source = image(qemu, tmp_path, bytes(4 * MIB), "qcow2")
+    disk = fake_disk(8 * MIB, fstype="vfat", label="STICK")
+    assert make_write_plan(DiskWrite(source, Path(disk.path)), qemu).erased == \
+        "a vfat file system “STICK” on the whole disk"
+
+
+def test_a_loop_device_of_the_image_itself(qemu, loops, tmp_path):
+    source = image(qemu, tmp_path, bytes(gpt_disk(4 * MIB, 6000)), "raw")
+    res = _run(["losetup", "-f", "--show", str(source)], loops.root, text=True)
+    if res.returncode != 0:
+        pytest.skip(res.stderr)
+    dev = res.stdout.strip()
+    try:
+        plan = make_write_plan(DiskWrite(source, Path(dev), elevate=loops.how), qemu)
+        assert f"{Path(dev).name} is a loop device of vm.raw, the image itself." in plan.errors
+    finally:
+        _run(["losetup", "-d", dev], loops.root)

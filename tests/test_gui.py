@@ -478,6 +478,8 @@ def test_save_dialog_consent_is_for_its_own_file(window, images, monkeypatch):
 
 
 def test_write_to_a_disk(window, qemu, images, fake_disk, monkeypatch):
+    import dataclasses
+
     from virtconvert.gui import write_dialog
 
     data = bytearray(8 * MIB)
@@ -510,7 +512,12 @@ def test_write_to_a_disk(window, qemu, images, fake_disk, monkeypatch):
         assert not dialog.write_btn.isEnabled() and "running system" in dialog.banner.text()
         box.setCurrentIndex(box.findData(stick.path))
         dialog._replan()
-        assert dialog.write_btn.isEnabled() and "Stick.img" in dialog.source_label.text().replace("​", "")
+        assert dialog.write_btn.isEnabled() and "Stick.img" in dialog.source_label.text().replace("\u200b", "")
+        # another stick plugged in under the same name since the list was filled: not even asked
+        fake_disk.disks[stick.path] = dataclasses.replace(stick, seq=stick.seq + 1)
+        dialog._write()
+        assert not answers and "not the disk that was chosen" in dialog.banner.text()
+        fake_disk.disks[stick.path] = stick
         dialog._write()                     # the first answer is no: nothing happens
         assert dialog.job is None and not dialog.result()
         dialog._write()

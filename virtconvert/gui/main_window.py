@@ -1471,6 +1471,10 @@ class MainWindow(QMainWindow):
             dialog.deleteLater()
         if job is None:
             return
+        if self.runner.busy:            # something started while the dialog was open
+            QMessageBox.warning(self, "Write to disk", f"{self.runner.name} is running. Nothing was written; "
+                                "write the disk when it has finished.")
+            return
         qemu, log = self.qemu, self.logLine.emit
 
         def work(progress, cancel):
@@ -1494,7 +1498,11 @@ class MainWindow(QMainWindow):
 
     def _write_failed(self, job, exc: BaseException) -> None:
         if isinstance(exc, OperationCancelled):
-            self.log(f"Stopped: {job.disk} is only partly written. Write it again, or format it.", "warning")
+            if getattr(exc, "written", False):
+                self.log(f"Stopped: {job.disk} is written, but wasn't compared with the image (or fitted to the "
+                         "disk's size). Write it again to be sure.", "warning")
+            else:
+                self.log(f"Stopped: {job.disk} is only partly written. Write it again, or format it.", "warning")
             self.toast.show_message("Stopped", "warning")
         elif isinstance(exc, VerifyError):
             self.log(str(exc), "error")

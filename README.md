@@ -389,6 +389,8 @@ Things to know:
   drivers for its disk controller (it stops at `INACCESSIBLE_BOOT_DEVICE` without them) and may ask
   to be activated again. Linux usually just starts.
 - **Cancelling** stops right away, but leaves the disk partly written: write it again, or format it.
+- **The new partitions don't show up?** The desktop normally notices them at once; if it doesn't,
+  unplug the disk and plug it in again.
 - **Disks with 4 KB sectors** (some NVMe SSDs and USB disks) can't use a partition table made for
   512-byte sectors, which is what virtual disks have; VirtConvert&Create says so instead of writing a
   disk that wouldn't start.

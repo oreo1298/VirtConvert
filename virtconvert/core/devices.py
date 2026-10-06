@@ -26,6 +26,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,7 +41,10 @@ from .util import MIB, human_bytes
 
 LSBLK_COLUMNS = ("NAME,KNAME,TYPE,SIZE,MODEL,VENDOR,SERIAL,TRAN,RM,RO,LOG-SEC,PHY-SEC,PTTYPE,PARTTYPE,"
                  "PARTFLAGS,FSTYPE,LABEL,MOUNTPOINT")
-SYSTEM_MOUNTS = ("/", "/boot", "/boot/efi", "/efi", "/usr", "/var", "/home", "[SWAP]")
+SYSTEM_MOUNTS = ("/", "/boot", "/boot/efi", "/efi", "/usr", "/var", "/home", "[SWAP]",
+                 # the USB stick or DVD a live system runs from (Ubuntu, Debian, Fedora, Arch)
+                 "/cdrom", "/run/live/medium", "/lib/live/mount/medium", "/run/initramfs/live",
+                 "/run/archiso/bootmnt", "/run/archiso/img_dev")
 # eMMC boot areas and replay-protected blocks are separate devices of the same chip
 NOT_DISKS = re.compile(r"^(zram|ram|loop|nbd|mmcblk\d+(boot\d+|rpmb))")
 KINDS = {"usb": "USB", "nvme": "NVMe", "sata": "SATA", "ata": "ATA", "sas": "SAS", "scsi": "SCSI",
@@ -74,6 +78,7 @@ class DiskPart:
     label: str = ""
     parttype: str = ""       # GPT type GUID, or the MBR type as "0x83"
     bootable: bool = False   # MBR active flag
+    start: int = -1          # bytes from the disk's start (from /sys; -1: unknown)
 
 
 @dataclass
@@ -95,6 +100,9 @@ class PhysicalDisk:
     mountpoints: list[str] = field(default_factory=list)   # of the disk and everything on it
     mounted: list[tuple[str, str]] = field(default_factory=list)   # (device, mountpoint): the disk's own
     holders: list[str] = field(default_factory=list)       # "luks-1 (crypt)": LVM, RAID, open encrypted volumes
+    fstype: str = ""             # a file system on the whole disk (no partition table)
+    label: str = ""
+    seq: int = 0                 # the kernel's diskseq: new for every disk or medium plugged in (0: unknown)
 
     @property
     def title(self) -> str:
@@ -154,7 +162,8 @@ class PhysicalDisk:
                     kind = MBR_TYPES.get(int(p.parttype, 16), f"Type {p.parttype}")
                 except ValueError:
                     kind = "Other"
-            table.partitions.append(Partition(n, 0, p.size, kind, p.label, bootable=p.bootable))
+            table.partitions.append(Partition(n, max(p.start, 0), p.size, kind, p.label, bootable=p.bootable))
+        table.positions_known = all(p.start >= 0 for p in self.partitions)
         return table
 
 
@@ -207,6 +216,21 @@ def _holders(entry: dict) -> list[str]:
     return found
 
 
+def _sys_value(name: str, key: str) -> str:
+    """/sys/class/block/NAME/KEY (a partition's start in 512-byte units, a disk's diskseq), or ''."""
+    try:
+        with open(f"/sys/class/block/{name}/{key}", encoding="ascii") as f:
+            return f.read().strip()
+    except (OSError, ValueError):
+        return ""
+
+
+def backing_file(device: str | os.PathLike) -> str | None:
+    """The file behind a loop device (writing onto it writes into that file), or None."""
+    name = os.path.basename(os.path.realpath(device))
+    return _sys_value(name, "loop/backing_file") or None
+
+
 def _disk(entry: dict) -> PhysicalDisk:
     name = _value(entry, "kname", "") or _value(entry, "name", "")
     disk = PhysicalDisk(
@@ -215,7 +239,9 @@ def _disk(entry: dict) -> PhysicalDisk:
         serial=str(_value(entry, "serial", "")).strip(), transport=str(_value(entry, "tran", "")).strip(),
         removable=_flag(entry.get("rm")), read_only=_flag(entry.get("ro")),
         logical_sector=_number(entry.get("log-sec"), 512), physical_sector=_number(entry.get("phy-sec"), 512),
-        table=str(_value(entry, "pttype", "")), mountpoints=_mounts(entry), holders=_holders(entry))
+        table=str(_value(entry, "pttype", "")), mountpoints=_mounts(entry), holders=_holders(entry),
+        fstype=str(_value(entry, "fstype", "")), label=str(_value(entry, "label", "")),
+        seq=_number(_sys_value(name, "diskseq")))
     disk.mounted = [(disk.path, m) for m in _own_mounts(entry)]
     # lsblk's VENDOR is often a placeholder ("ATA", "Generic", a PCI ID) or repeats the model
     if (disk.vendor.upper() in ("ATA", "GENERIC", "NVME", "") or disk.vendor.lower() in disk.model.lower()
@@ -224,11 +250,13 @@ def _disk(entry: dict) -> PhysicalDisk:
     for child in entry.get("children", []) or []:
         if _value(child, "type") == "part":
             cname = _value(child, "kname", "") or _value(child, "name", "")
+            start = _number(_sys_value(cname, "start"), -1)       # always 512-byte units
             disk.partitions.append(DiskPart(
                 name=cname, path=f"/dev/{cname}", size=_number(child.get("size")),
                 fstype=str(_value(child, "fstype", "")), label=str(_value(child, "label", "")),
                 parttype=str(_value(child, "parttype", "")),
-                bootable=str(_value(child, "partflags", "")).lower() == "0x80"))
+                bootable=str(_value(child, "partflags", "")).lower() == "0x80",
+                start=start * 512 if start >= 0 else -1))
             disk.mounted += [(f"/dev/{cname}", m) for m in _own_mounts(child)]
     return disk
 
@@ -430,7 +458,7 @@ def _open_error(path: str, number: int | None, text: str, write: bool) -> str:
     if write and number == errno.EBUSY:
         return (f"{path} is in use: it or a partition on it is mounted, or it belongs to LVM, a RAID array or an "
                 "open encrypted volume. Unmount or close it, then try again.")
-    if write and number in (errno.EROFS, errno.EACCES):
+    if write and number == errno.EROFS:
         return f"{path} can't be written to: it is write-protected (a memory card's lock switch?)."
     if number == getattr(errno, "ENOMEDIUM", 123):
         return f"{path} has no medium (an empty card reader?)."
@@ -571,7 +599,9 @@ class DeviceReader:
 
 class DeviceWriter:
     """Writes the first SIZE bytes of a disk opened for writing (writedisk.py) for the writable NBD
-    server, and reads them back for the comparison afterwards."""
+    server, and reads them back for the comparison afterwards. Requests run one at a time, and
+    close() waits for the one in progress (an NBD thread may still be in one when the copy is
+    cancelled)."""
 
     def __init__(self, fd: int, size: int, name: str):
         self.fd = fd
@@ -582,8 +612,19 @@ class DeviceWriter:
         self.size = size
         self._zeroout = True
         self._unflushed = 0
+        self._lock = threading.RLock()
+        self._closing = False
+
+    def _open(self) -> None:
+        if self._closing or self.fd < 0:
+            raise ConvertError(f"Writing to {self.name} was stopped.")
 
     def read(self, offset: int, length: int) -> bytes:
+        with self._lock:
+            self._open()
+            return self._read(offset, length)
+
+    def _read(self, offset: int, length: int) -> bytes:
         length = max(0, min(length, self.size - offset))
         chunks = []
         pos, end = offset, offset + length
@@ -599,6 +640,11 @@ class DeviceWriter:
         return b"".join(chunks)
 
     def write(self, offset: int, data: bytes) -> None:
+        with self._lock:
+            self._open()
+            self._write(offset, data)
+
+    def _write(self, offset: int, data: bytes) -> None:
         view = memoryview(data)
         done = 0
         while done < len(view):
@@ -614,6 +660,11 @@ class DeviceWriter:
     def zero(self, offset: int, length: int) -> None:
         """Zeros: whole sectors by the kernel (BLKZEROOUT, which lets the disk do it when it can),
         the rest, or everything on a disk without it, written."""
+        with self._lock:
+            self._open()
+            self._zero(offset, length)
+
+    def _zero(self, offset: int, length: int) -> None:
         pos, end = offset, offset + length
         first, last = -(-pos // 512) * 512, end // 512 * 512
         if self._zeroout and last > first:
@@ -621,6 +672,7 @@ class DeviceWriter:
                 self._write_zeros(pos, first - pos)
             pos = first
             while pos < last and self._zeroout:
+                self._open()            # stop between chunks when closing
                 step = min(ZERO_CHUNK, last - pos)
                 try:
                     fcntl.ioctl(self.fd, BLKZEROOUT, struct.pack("=QQ", pos, step))
@@ -635,8 +687,9 @@ class DeviceWriter:
     def _write_zeros(self, offset: int, length: int) -> None:
         block = bytes(min(length, 4 * MIB))
         while length > 0:
+            self._open()
             n = min(length, len(block))
-            self.write(offset, block[:n])
+            self._write(offset, block[:n])
             offset += n
             length -= n
 
@@ -650,13 +703,17 @@ class DeviceWriter:
             self.drop_cache()
 
     def flush(self) -> None:
-        try:
-            os.fsync(self.fd)
-        except OSError as exc:
-            raise self._failed("written", None, exc) from None
+        with self._lock:
+            self._open()
+            try:
+                os.fsync(self.fd)
+            except OSError as exc:
+                raise self._failed("written", None, exc) from None
 
     def drop_cache(self) -> None:
         """Forget what's cached of the disk, so reading it again reads the disk itself."""
+        if self.fd < 0:
+            return
         try:
             os.posix_fadvise(self.fd, 0, 0, os.POSIX_FADV_DONTNEED)
         except (AttributeError, OSError):
@@ -677,9 +734,11 @@ class DeviceWriter:
         return ConvertError(f"{verb} {self.name} failed{where}: {exc.strerror or exc}")
 
     def close(self) -> None:
-        if self.fd >= 0:
-            os.close(self.fd)
-            self.fd = -1
+        self._closing = True
+        with self._lock:
+            if self.fd >= 0:
+                os.close(self.fd)
+                self.fd = -1
 
 
 __all__ = ["PhysicalDisk", "DiskPart", "list_disks", "disk_info", "is_device", "inspect_device", "info_from_disk",

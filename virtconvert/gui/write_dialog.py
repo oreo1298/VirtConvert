@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import html
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtCore import QCoreApplication, QEventLoop, QSettings, Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -154,10 +156,18 @@ class WriteDiskDialog(QDialog):
                 return
             path, member = sources[names.index(name)]
         QGuiApplication.setOverrideCursor(Qt.WaitCursor)
+        self.setEnabled(False)
         try:
+            # (in a thread: a chain or an appliance can take a moment, and the window stays alive)
+            with ThreadPoolExecutor(1) as pool:
+                future = pool.submit(inspect_image, Path(path), self.qemu, member=member)
+                while not future.done():
+                    QCoreApplication.processEvents(QEventLoop.AllEvents, 50)
+                    time.sleep(0.01)
             self.source, self.member, self.parents, self.force_parent = Path(path), member, {}, False
-            self.info = inspect_image(self.source, self.qemu, member=member)
+            self.info = future.result()
         finally:
+            self.setEnabled(True)
             QGuiApplication.restoreOverrideCursor()
         self._show_source()
         self._changed()
@@ -172,7 +182,9 @@ class WriteDiskDialog(QDialog):
                          member=self.member, parents=dict(self.parents), force_parent=self.force_parent,
                          elevate="pkexec", expect=disk_identity(disk))
 
-    def _replan(self) -> None:
+    def _replan(self, fresh: bool = False) -> None:
+        """FRESH: ask lsblk about the chosen disk again (before erasing it), instead of the list's
+        description from when it was filled."""
         disk = self.chooser.disk()
         self.plan = None
         errors: list[str] = []
@@ -183,7 +195,8 @@ class WriteDiskDialog(QDialog):
             errors = [self.chooser.error or "No disks were found."]
         else:
             try:
-                self.plan = make_write_plan(self.job_for(disk), self.qemu, self.info, disk)
+                now = devices.disk_info(disk.path) if fresh else disk
+                self.plan = make_write_plan(self.job_for(disk), self.qemu, self.info, now)
                 summary, errors = self.plan.summary, self.plan.errors
             except (OSError, ConvertError) as exc:
                 summary, errors = "Can't continue", [str(exc)]
@@ -212,7 +225,7 @@ class WriteDiskDialog(QDialog):
 
     def _write(self) -> None:
         self._timer.stop()
-        self._replan()
+        self._replan(fresh=True)
         plan = self.plan
         if plan is None or not plan.ok or plan.disk is None:
             return

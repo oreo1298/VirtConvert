@@ -73,6 +73,8 @@ class PartitionTable:
     sector_size: int = 512
     partitions: list[Partition] = field(default_factory=list)
     has_boot_code: bool = False
+    entries_bytes: int = 0          # a GPT's entry array (its backup needs that much at the disk's end)
+    positions_known: bool = True    # false when only the sizes are known (lsblk without /sys)
 
     @property
     def firmware(self) -> str:
@@ -121,7 +123,8 @@ def analyze(head: bytes, logical_sector: int | None = None) -> PartitionTable:
         if table is not None:
             return table
     if len(head) >= 512 and head[510:512] == b"\x55\xaa":
-        table = _mbr(head)
+        # an MBR counts in the disk's sectors: 512 bytes unless the disk is known to use 4 KB ones
+        table = _mbr(head, logical_sector or 512)
         if table is not None:
             return table
     return PartitionTable("none")
@@ -131,7 +134,8 @@ def _gpt(head: bytes, sector: int) -> PartitionTable | None:
     if len(head) < 2 * sector or head[sector:sector + 8] != b"EFI PART":
         return None
     entries_lba, count, entry_size = struct.unpack_from("<QII", head, sector + 72)
-    table = PartitionTable("gpt", sector_size=sector, has_boot_code=any(head[:440]))
+    table = PartitionTable("gpt", sector_size=sector, has_boot_code=any(head[:440]),
+                           entries_bytes=count * entry_size)
     if entry_size < 128 or count > 1024:
         return table
     start = entries_lba * sector
@@ -149,8 +153,8 @@ def _gpt(head: bytes, sector: int) -> PartitionTable | None:
     return table
 
 
-def _mbr(head: bytes) -> PartitionTable | None:
-    table = PartitionTable("mbr", has_boot_code=any(head[:440]))
+def _mbr(head: bytes, sector: int = 512) -> PartitionTable | None:
+    table = PartitionTable("mbr", sector_size=sector, has_boot_code=any(head[:440]))
     for i in range(4):
         off = 446 + 16 * i
         status, ptype = head[off], head[off + 4]
@@ -159,7 +163,7 @@ def _mbr(head: bytes) -> PartitionTable | None:
             return None  # not a partition table (a filesystem boot sector, for example)
         if ptype == 0 or sectors == 0:
             continue
-        table.partitions.append(Partition(i + 1, lba * 512, sectors * 512,
+        table.partitions.append(Partition(i + 1, lba * sector, sectors * sector,
                                           MBR_TYPES.get(ptype, f"Type {ptype:02X}"),
                                           bootable=status == 0x80))
     if not table.partitions:
@@ -246,9 +250,9 @@ def mbr_table(partitions: list[tuple[int, int, int]], signature: bool = True) ->
     return {0: bytes(mbr)}
 
 
-def gpt_room(sector: int, entries: int = GPT_ENTRIES) -> int:
+def gpt_room(sector: int, entries_bytes: int = GPT_ENTRIES * 128) -> int:
     """The bytes a GPT needs after the last partition: its backup entries and header."""
-    return -(-entries * 128 // sector) * sector + sector
+    return -(-entries_bytes // sector) * sector + sector
 
 
 def move_backup_gpt(read: Callable[[int, int], bytes], write: Callable[[int, bytes], None], disk_size: int,

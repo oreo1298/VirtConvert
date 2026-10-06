@@ -340,9 +340,13 @@ def cmd_write(args) -> int:
     progress = Progress(args.quiet)
     try:
         outcome = write_to_disk(plan, qemu, progress)
-    except (OperationCancelled, KeyboardInterrupt):
+    except (OperationCancelled, KeyboardInterrupt) as exc:
         progress.finish()
-        print(f"\nStopped. {disk.path} is only partly written: write it again, or format it.", file=sys.stderr)
+        if getattr(exc, "written", False):
+            print(f"\nStopped. {disk.path} is written, but wasn't compared with the image (or fitted to the disk's "
+                  "size): write it again to be sure.", file=sys.stderr)
+        else:
+            print(f"\nStopped. {disk.path} is only partly written: write it again, or format it.", file=sys.stderr)
         return 130
     finally:
         progress.finish()

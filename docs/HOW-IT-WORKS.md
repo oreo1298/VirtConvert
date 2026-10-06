@@ -257,9 +257,13 @@ merged chain, a disk inside an OVA, another physical disk.
 whole disk, an empty card reader, a write-protected disk, the disk the running system uses (`/`,
 `/boot`, `/home`, swap…), a disk with LVM, RAID or unlocked encrypted volumes on it, the disk the
 image (or any file of its chain) is stored on, and a disk whose sector size doesn't match the
-image's partition table (a 512-byte GPT is not found on a 4 KB-sector disk). The app also passes
-the size, model and serial number of the disk the person saw, and the plan is made again right
-before writing: a different stick plugged in under the same name is refused. Mounted file systems
+image's partition table (a 512-byte GPT is not found on a 4 KB-sector disk; an MBR counts in the
+disk's own sectors too). The app passes the size, model, serial number and `diskseq` (the kernel's
+number for every disk and medium it sees, so two cards in one reader differ) of the disk the
+person saw. The plan is made again right before asking, again before writing, and once more after
+the disk is open (the password dialogs are over and the disk is held): a different stick plugged
+in under the same name is refused. A loop device whose backing file is the image, and network
+block devices (which could be anything), are refused too. Mounted file systems
 of the disk are listed to be unmounted first (`udisksctl unmount`, as the file manager does; then
 `umount`, as root or through `sudo`/`pkexec`).
 
@@ -274,14 +278,19 @@ to reach it at the end; then `fsync`. Comparing drops the disk's cache first, so
 on the disk, not what the computer remembers.
 
 The size: an image no larger than the disk is written whole. One larger than the disk is accepted
-when its partitions (with a GPT's backup after them) end before the disk's end; then the first
-part is written, through a raw `size` limit around the source's qemu-img specification. Afterwards
+when its partitions (with a GPT's backup, as large as its own entry array, after them) end before
+the disk's end; then the first part is written, through a raw `size` limit around the source's
+qemu-img specification. Where the partitions are has to be known for that: a physical disk read
+without a password only has lsblk's sizes, so the starts come from `/sys/class/block/*/start`, and
+right before writing the source's partition table is read once more through the very reader that
+is about to be copied. Afterwards
 the disk is fitted (`move_backup_gpt`, what `sgdisk -e` does): the backup GPT entries and header go
 to the disk's last sectors, the last usable sector and the protective MBR follow the disk's size,
 and the image's old backup header, now in the middle of a larger disk, is cleared. Linux ignores a
 GPT whose partitions may lie past the disk's end, and partitioning tools complain about a backup
 in the wrong place. The last megabyte of a larger disk is cleared too: old GPT backups, RAID
-superblocks and ZFS labels live there and would confuse `blkid`.
+superblocks and ZFS labels live there and would confuse `blkid`. If a GPT can't be fitted to a
+smaller disk, that is an error, not a note: the disk wouldn't work.
 
 ## 8. Testing
 

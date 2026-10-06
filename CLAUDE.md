@@ -38,7 +38,9 @@ distributions. Design notes: docs/HOW-IT-WORKS.md.
 - The only writes to a physical disk are `write_to_disk` after the person confirmed erasing that disk (the app:
   `ask_yes_no` with Cancel as default; the CLI: typing the disk's name, or `--yes`). `make_write_plan` refuses the
   system disk, partitions, read-only disks, disks with holders (LVM/RAID/crypt), the disk the image is stored on,
-  and a sector-size mismatch; `DiskWrite.expect` (size, model, serial) catches a different disk under the name.
+  and a sector-size mismatch; `DiskWrite.expect` (`disk_identity`: size, model, serial, diskseq) catches a different
+  disk under the name, checked again after the exclusive open. Writing less than the image (a smaller disk) needs
+  known partition positions (sysfs `start`), is re-checked from the source's own table, and an unfittable GPT fails.
 - Always pass formats explicitly (`qemu.source_spec`): qemu-img takes fixed VHDs for raw, and sizes VHDs from
   unknown creators by CHS (we force `force_size_calc=current_size`; VHD targets get `force_size=on`).
 - qemu-img silently ignores the parent of a differencing VHD and refuses differencing VHDX/VDI:
