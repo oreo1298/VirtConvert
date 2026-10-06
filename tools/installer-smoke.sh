@@ -7,6 +7,8 @@ if command -v apk >/dev/null; then apk add --no-cache bash >/dev/null; fi
 if command -v xbps-install >/dev/null; then xbps-install -Syu xbps >/dev/null && xbps-install -Sy bash tar >/dev/null; fi
 if command -v zypper >/dev/null; then zypper --non-interactive install --no-recommends tar gzip >/dev/null; fi
 if command -v dnf >/dev/null; then dnf install -y tar >/dev/null; fi
+# RHEL family: EPEL, as the README says
+if grep -qiE '^ID="?(rocky|almalinux|rhel|centos)' /etc/os-release 2>/dev/null; then dnf install -y epel-release >/dev/null; fi
 
 cp -r /src /tmp/VirtConvert
 cd /tmp/VirtConvert

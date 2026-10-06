@@ -94,7 +94,7 @@ First install git for your distribution:
 |---|---|
 | **Ubuntu 22.04 and newer, Linux Mint, Pop!_OS, Zorin OS, elementary OS, KDE neon, Debian 12/13** | `sudo apt install git` |
 | **Fedora, Nobara, Ultramarine** | `sudo dnf install git` |
-| **RHEL, AlmaLinux, Rocky Linux 9+** | `sudo dnf install git` |
+| **RHEL, AlmaLinux, Rocky Linux 9+** | `sudo dnf install epel-release git` (EPEL has a library the app needs on X11) |
 | **openSUSE Tumbleweed / Leap** | `sudo zypper install git` |
 | **Void Linux** | `sudo xbps-install -S git bash` |
 | **Alpine Linux** | `sudo apk add git bash` (enable the community repository for PySide6) |

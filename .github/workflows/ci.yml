@@ -109,7 +109,6 @@ jobs:
             experimental: true
           - image: alpine:latest
             experimental: true
-            gui: "0"
           - image: ghcr.io/void-linux/void-glibc-full:latest
             experimental: true
     continue-on-error: ${{ matrix.experimental == true }}
