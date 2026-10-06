@@ -28,14 +28,15 @@ from .core.convert import (
     repair,
     verify_images,
 )
+from .core.create import FILESYSTEMS, NewDisk, available_filesystems, create_disk, make_create_plan, parse_size
 from .core.errors import ConvertError, OperationCancelled, QemuImgMissingError
-from .core.images import inspect_image
+from .core.images import expand_sources, inspect_image
 from .core.probe import ImageInfo
 from .core.qemu import QemuImg
 from .core.util import human_bytes, mmss
 
 SPINNER = "|/-\\"
-COMMANDS = ("gui", "info", "convert", "verify", "repair", "formats", "doctor")
+COMMANDS = ("gui", "info", "convert", "create", "verify", "repair", "formats", "doctor")
 
 
 class Progress:
@@ -97,7 +98,7 @@ def _print_messages(errors: list[str], warnings: list[str], notes: list[str], in
 
 def _info_json(info: ImageInfo) -> dict:
     data = {
-        "path": str(info.path), "format": info.format.key if info.format else None,
+        "path": str(info.path), "member": info.member, "format": info.format.key if info.format else None,
         "subformat": info.subformat, "virtual_size": info.virtual_size, "file_size": info.file_size,
         "allocated": info.allocated, "block_size": info.block_size,
         "logical_sector_size": info.logical_sector, "disk_id": info.disk_id, "creator": info.creator,
@@ -115,7 +116,8 @@ def _info_json(info: ImageInfo) -> dict:
 
 def cmd_info(args) -> int:
     qemu = _qemu(required=False)
-    infos = [inspect_image(Path(f), qemu, candidates=args.parent) for f in args.files]
+    infos = [inspect_image(path, qemu, candidates=args.parent, member=member)
+             for f in args.files for path, member in expand_sources(f)]
     if args.json:
         print(json.dumps([_info_json(i) for i in infos] if len(infos) > 1 else _info_json(infos[0]),
                          indent=2))
@@ -123,7 +125,7 @@ def cmd_info(args) -> int:
     for n, info in enumerate(infos):
         if n:
             print()
-        print(info.path)
+        print(f"{info.path} › {info.member}" if info.member else info.path)
         if info.format is not None and info.virtual_size:
             width = 12
             for key, value in info.describe():
@@ -140,33 +142,40 @@ def cmd_info(args) -> int:
 
 def cmd_convert(args) -> int:
     qemu = _qemu()
-    sources = [Path(f) for f in args.files]
+    sources = [s for f in args.files for s in expand_sources(f)]
     if args.output and len(sources) > 1:
-        raise SystemExit("--output works with one source; use --dir for several.")
+        raise SystemExit("--output works with one disk; use --dir for several."
+                         + (" (The appliance contains several disks.)" if len(args.files) == 1 else ""))
     if args.dir and not Path(args.dir).is_dir():
         raise SystemExit(f"{args.dir} is not a folder.")
     candidates = [Path(p) for p in args.parent]
     failures = 0
-    for n, source in enumerate(sources):
+    planned: set[Path] = set()
+    for n, (source, member) in enumerate(sources):
         if n:
             print()
         parents = {}
         if args.force_parent and len(candidates) == 1:
             parents = {source: candidates[0]}
-        info = inspect_image(source, qemu, parents, args.force_parent, candidates)
-        target = parse_target(args.to, fixed=args.fixed) if args.to else default_target(info)
-        if args.fixed and not target.fixed and not target.format.can_be_fixed:
-            print(f"  ! {target.format.label} has no fixed variant; making a dynamic one.")
+        info = inspect_image(source, qemu, parents, args.force_parent, candidates, member)
+        target = parse_target(args.to or default_target(info).format.key, fixed=args.fixed, split=args.split)
+        if args.fixed and not target.fixed:
+            print(f"  ! {target.label} has no preallocated variant; making a dynamic one.")
+        if args.split and not target.split:
+            print(f"  ! Only VMDK files can be split; making one {target.format.label} file.")
         if args.output:
             output = Path(args.output)
         else:
             output = default_output(info, target, Path(args.dir) if args.dir else None,
                                     unique=False)
+            if output in planned:       # two disks of one appliance with the same name
+                output = default_output(info, target, output.parent, taken=planned)
+        planned.add(output)
         job = Job(source=source, target=target, output=output, verify=not args.no_verify,
                   overwrite=args.overwrite, parents=parents, force_parent=args.force_parent,
                   candidates=candidates)
         plan = make_plan(job, qemu, info)
-        print(f"{source.name} → {job.output}")
+        print(f"{info.name} → {job.output}")
         print(f"  {info.label}, {human_bytes(info.virtual_size)}  →  {job.target.label}"
               + (f", {human_bytes(plan.size)}" if plan.size != info.virtual_size else ""))
         _print_messages(plan.errors, plan.warnings, [] if args.quiet else plan.notes)
@@ -190,9 +199,47 @@ def cmd_convert(args) -> int:
         finally:
             progress.finish()
         check = ", verified identical to the source" if outcome.verified else ""
-        print(f"  ✓ {outcome.output.name}: {human_bytes(outcome.file_size)} file{check} "
+        files = f"{len(outcome.files)} files" if len(outcome.files) > 1 else "file"
+        print(f"  ✓ {outcome.output.name}: {human_bytes(outcome.file_size)} {files}{check} "
               f"({mmss(outcome.seconds)})")
     return 1 if failures else 0
+
+
+def cmd_create(args) -> int:
+    qemu = _qemu()
+    output = Path(args.output)
+    if args.to:
+        target = parse_target(args.to, fixed=args.fixed, split=args.split)
+        if not output.suffix:
+            output = output.with_name(output.name + target.format.extension)
+    else:
+        fmt = F.by_extension(output.name)
+        if fmt is None or not fmt.writable:
+            raise SystemExit(f"Say which format {output.name} should be with --to (vdi, vmdk, vhd, vhdx, "
+                             "qcow2, qed, ova, raw), or give it that extension.")
+        target = parse_target(fmt.key, fixed=args.fixed, split=args.split)
+    scheme = args.table or ("gpt" if args.fs else "none")
+    disk = NewDisk(output=output, target=target, size=parse_size(args.size), scheme=scheme,
+                   filesystem=args.fs or "", label=args.label or "", verify=not args.no_verify,
+                   overwrite=args.overwrite)
+    plan = make_create_plan(disk, qemu)
+    print(f"New disk {disk.output}")
+    print(f"  {plan.summary}")
+    _print_messages(plan.errors, plan.warnings, [] if args.quiet else plan.notes)
+    if not plan.ok:
+        return 1
+    if plan.warnings and not args.yes and sys.stdin.isatty():
+        if input("  Continue anyway? [y/N] ").strip().lower() not in ("y", "yes"):
+            return 1
+    progress = Progress(args.quiet)
+    try:
+        outcome = create_disk(plan, qemu, progress)
+    finally:
+        progress.finish()
+    check = ", checked" if outcome.verified else ""
+    files = f"{len(outcome.files)} files" if len(outcome.files) > 1 else "file"
+    print(f"  ✓ {outcome.output.name}: {human_bytes(outcome.file_size)} {files}{check} ({mmss(outcome.seconds)})")
+    return 0
 
 
 def cmd_verify(args) -> int:
@@ -240,19 +287,35 @@ def cmd_repair(args) -> int:
 
 def cmd_formats(args) -> int:
     qemu = _qemu(required=False)
-    print("Formats (read and write):")
-    for fmt in F.ALL:
+
+    def show(fmt: F.Format) -> None:
         flag = ""
         if qemu is not None and qemu.formats and fmt.driver not in qemu.formats:
             flag = "  (not supported by this qemu-img)"
-        print(f"  {fmt.key:<6} {fmt.label:<5} {', '.join(fmt.extensions):<16} {fmt.title}{flag}")
+        print(f"  {fmt.key:<10} {', '.join(fmt.extensions):<22} {fmt.title}{flag}")
+
+    print("Read and write:")
+    for fmt in F.WRITABLE:
+        show(fmt)
+    print("\nRead only (convert them to one of the above):")
+    for fmt in F.ALL:
+        if not fmt.writable:
+            show(fmt)
     print("\nTargets for --to (formats, or these shortcuts):")
     shortcuts = {"virtualbox": "VDI, dynamic", "hyperv": "VHDX, dynamic", "vmware": "VMDK, dynamic",
-                 "ova": "VMDK, stream-optimized (also: esxi)", "azure": "VHD, fixed, whole MB"}
+                 "esxi": "VMDK, stream-optimized (also: stream)", "azure": "VHD, fixed, whole MB",
+                 "proxmox": "QCOW2 (also: kvm, qemu)"}
     for name, text in shortcuts.items():
-        assert name in PRESETS
+        assert name in PRESETS or name in F.ALIASES
         print(f"  {name:<11} {text}")
-    print("\nWithout --to: VHD and VHDX become VDI (VirtualBox), everything else becomes VHDX (Hyper-V).")
+    print("\nVariants: --fixed allocates the whole disk now (VDI, VHD, VHDX, QCOW2, raw; a VMDK gets a "
+          "separate -flat data file),\n          --split makes a VMDK in 2 GB files.")
+    print("\nWithout --to: VirtualBox disks (VDI, VMDK) become VHDX for Hyper-V; everything else "
+          "becomes VDI for VirtualBox.")
+    print("\nFile systems for new disks (vertconvert create --fs):")
+    for fs, tool in zip(FILESYSTEMS, available_filesystems().values()):
+        missing = "" if tool else f"  (needs {fs.tools[0]}: {system.install_command(system.package_for(fs.package))})"
+        print(f"  {fs.key:<7} {fs.title}{missing}")
     return 0
 
 
@@ -284,7 +347,8 @@ def cmd_doctor(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="vertconvert",
-        description="Convert Hyper-V disks (VHD, VHDX) to VirtualBox (VDI, VMDK) and back. "
+        description="Convert and create virtual disks for VirtualBox, Hyper-V, VMware, QEMU/KVM and "
+                    "more (VDI, VMDK, VHD, VHDX, QCOW2, QED, OVA, raw; also reads Parallels, DMG, ISO). "
                     "Without a command the app starts.",
         epilog="Examples:\n"
                "  vertconvert                          open the app\n"
@@ -293,7 +357,11 @@ def build_parser() -> argparse.ArgumentParser:
                "  vertconvert convert disk.vdi         -> disk.vhdx for Hyper-V\n"
                "  vertconvert convert -t vmdk *.vhdx   several at once\n"
                "  vertconvert convert -t azure os.vdi  fixed VHD for Azure\n"
-               "  vertconvert verify disk.vhdx disk.vdi\n",
+               "  vertconvert convert -t ova vm.vhdx   an appliance for File > Import Appliance\n"
+               "  vertconvert convert app.ova          each disk of an appliance -> VDI\n"
+               "  vertconvert verify disk.vhdx disk.vdi\n"
+               "  vertconvert create new.vdi -s 50G   an empty 50 GB disk\n"
+               "  vertconvert create data.vhdx -s 1T --fs ntfs --label Data\n",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"vertconvert {__version__}")
     sub = ap.add_subparsers(dest="command", metavar="COMMAND")
@@ -309,15 +377,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_info)
 
     p = sub.add_parser("convert", help="convert images",
-                       description="Convert images. Without --to, VHD and VHDX files become VDI "
-                                   "and everything else becomes VHDX.")
+                       description="Convert images. Without --to, VirtualBox disks (VDI, VMDK) become "
+                                   "VHDX and everything else becomes VDI. An OVA's disks are "
+                                   "converted one by one.")
     p.add_argument("files", nargs="+", metavar="IMAGE")
     p.add_argument("-t", "--to", metavar="FORMAT",
-                   help="vdi, vmdk, vhd, vhdx, qcow2, raw, or virtualbox, hyperv, vmware, ova, azure")
+                   help="vdi, vmdk, vhd, vhdx, qcow2, qed, ova, raw, or virtualbox, hyperv, vmware, "
+                        "esxi, azure, proxmox (see 'vertconvert formats')")
     p.add_argument("-o", "--output", metavar="FILE", help="the converted file (one source only)")
     p.add_argument("-d", "--dir", metavar="FOLDER", help="put converted files in this folder")
     p.add_argument("--fixed", action="store_true",
-                   help="allocate the whole disk now (VDI, VHD, VHDX, QCOW2)")
+                   help="allocate the whole disk now (VDI, VHD, VHDX, QCOW2, raw, VMDK)")
+    p.add_argument("--split", action="store_true", help="VMDK in 2 GB files (VMware Workstation)")
     p.add_argument("--no-verify", action="store_true",
                    help="don't compare the copy with the source afterwards")
     p.add_argument("--overwrite", action="store_true", help="replace existing files")
@@ -328,6 +399,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-y", "--yes", action="store_true", help="don't ask about warnings")
     p.add_argument("-q", "--quiet", action="store_true", help="no progress bar and notes")
     p.set_defaults(func=cmd_convert)
+
+    p = sub.add_parser("create", help="create a new disk: empty, or with a formatted partition",
+                       description="Create a new virtual disk. The format comes from the file name's "
+                                   "extension or --to. With --fs the disk gets one partition (GPT unless "
+                                   "--table mbr) formatted with that file system, ready to use as an extra "
+                                   "disk.")
+    p.add_argument("output", metavar="FILE", help="the new disk, e.g. data.vdi")
+    p.add_argument("-s", "--size", required=True, help="its size: 20G, 512M, 2T (binary units)")
+    p.add_argument("-t", "--to", metavar="FORMAT", help="vdi, vmdk, vhd, vhdx, qcow2, qed, ova, raw, or a "
+                                                         "shortcut like hyperv or azure (default: from FILE)")
+    p.add_argument("--fixed", action="store_true", help="allocate the whole disk now")
+    p.add_argument("--split", action="store_true", help="VMDK in 2 GB files")
+    p.add_argument("--table", choices=("gpt", "mbr", "none"),
+                   help="partition table (default: gpt with --fs, none without)")
+    p.add_argument("--fs", choices=[fs.key for fs in FILESYSTEMS], metavar="FS",
+                   help=f"format the partition: {', '.join(fs.key for fs in FILESYSTEMS)} "
+                        "(see 'vertconvert formats')")
+    p.add_argument("-L", "--label", help="the file system's name")
+    p.add_argument("--no-verify", action="store_true", help="don't check the new disk afterwards")
+    p.add_argument("--overwrite", action="store_true", help="replace an existing file")
+    p.add_argument("-y", "--yes", action="store_true", help="don't ask about warnings")
+    p.add_argument("-q", "--quiet", action="store_true", help="no progress and notes")
+    p.set_defaults(func=cmd_create)
 
     p = sub.add_parser("verify", help="check that two images contain the same disk")
     p.add_argument("first", metavar="IMAGE")

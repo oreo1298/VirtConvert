@@ -1,4 +1,4 @@
-"""Host checks: which distribution, which package manager, is qemu-img there."""
+"""Host checks: which distribution, which package manager, are qemu-img and the mkfs tools there."""
 
 from __future__ import annotations
 
@@ -35,6 +35,25 @@ QEMU_COMMANDS = {
     "eopkg": "sudo eopkg install qemu",
     "emerge": "sudo emerge --ask app-emulation/qemu",
 }
+# how people install a package, by package manager
+INSTALL_PREFIX = {
+    "rpm-ostree": "sudo rpm-ostree install", "pacman": "sudo pacman -S", "apt-get": "sudo apt install",
+    "dnf": "sudo dnf install", "yum": "sudo yum install", "zypper": "sudo zypper install",
+    "xbps-install": "sudo xbps-install -S", "apk": "sudo apk add", "eopkg": "sudo eopkg install",
+    "emerge": "sudo emerge --ask",
+}
+# the programs that make file systems, and their package by package manager (default: the first)
+MKFS_PACKAGES: dict[str, dict[str, str]] = {
+    "fat": {"*": "dosfstools", "emerge": "sys-fs/dosfstools"},
+    "exfat": {"*": "exfatprogs", "emerge": "sys-fs/exfatprogs"},
+    "ntfs": {"*": "ntfs-3g", "dnf": "ntfsprogs", "yum": "ntfsprogs", "rpm-ostree": "ntfsprogs",
+             "zypper": "ntfsprogs", "apk": "ntfs-3g-progs", "emerge": "sys-fs/ntfs3g"},
+    "ext4": {"*": "e2fsprogs", "emerge": "sys-fs/e2fsprogs"},
+    "btrfs": {"*": "btrfs-progs", "zypper": "btrfsprogs", "emerge": "sys-fs/btrfs-progs"},
+    "xfs": {"*": "xfsprogs", "emerge": "sys-fs/xfsprogs"},
+}
+# mkfs programs often live in sbin folders that aren't on a normal user's PATH (Debian)
+SBIN = ("/usr/local/sbin", "/usr/sbin", "/sbin")
 ORDER = ("rpm-ostree", "pacman", "apt-get", "dnf", "yum", "zypper", "xbps-install", "apk", "eopkg",
          "emerge", "nix-env")
 
@@ -78,6 +97,28 @@ def qemu_install_command() -> str:
     if pm in QEMU_COMMANDS:
         return QEMU_COMMANDS[pm]
     return "install qemu-img (often in a package called qemu-utils, qemu-tools or qemu-img)"
+
+
+def find_program(*names: str) -> str | None:
+    """The first of NAMES found on PATH or in the sbin folders."""
+    for name in names:
+        found = shutil.which(name) or shutil.which(name, path=os.pathsep.join(SBIN))
+        if found:
+            return found
+    return None
+
+
+def package_for(tool_key: str) -> str:
+    names = MKFS_PACKAGES[tool_key]
+    return names.get(package_manager() or "", names["*"])
+
+
+def install_command(package: str) -> str:
+    """The command that installs PACKAGE here, for people to copy."""
+    pm = package_manager()
+    if pm in INSTALL_PREFIX:
+        return f"{INSTALL_PREFIX[pm]} {package}" + ("   (then restart)" if pm == "rpm-ostree" else "")
+    return f"install {package} with your package manager"
 
 
 def install_qemu(graphical: bool = False) -> tuple[bool, str]:
@@ -164,4 +205,10 @@ def doctor() -> list[Check]:
     checks.append(Check("VirtualBox", bool(vbox), detail,
                         "Not needed for converting; install it to run the converted disks.",
                         optional=True))
+    from .create import FILESYSTEMS  # create imports this module
+    for fs in FILESYSTEMS:
+        tool = find_program(*fs.tools)
+        checks.append(Check(f"{fs.label} (new disks)", tool is not None, tool or "not installed",
+                            f"Only needed to create {fs.label} disks: {install_command(package_for(fs.package))}",
+                            optional=True))
     return checks

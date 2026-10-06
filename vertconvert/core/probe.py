@@ -15,13 +15,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import formats as F
-from . import vdi, vhd, vhdx
+from . import ova, vdi, vhd, vhdx
 from .errors import ConvertError, ImageFormatError
 from .formats import Format
 from .partitions import PartitionTable
 from .util import allocated_bytes, human_bytes
 
 QCOW_MAGIC = b"QFI\xfb"
+QED_MAGIC = b"QED\0"
+PARALLELS_MAGICS = (b"WithoutFreeSpace", b"WithouFreSpacExt")
+DMG_TRAILER = b"koly"
 VMDK_SPARSE_MAGIC = b"KDMV"
 VMDK_COWD_MAGIC = b"COWD"
 VMDK_DESCRIPTOR = b"# Disk DescriptorFile"
@@ -30,6 +33,9 @@ VMDK_DESCRIPTOR = b"# Disk DescriptorFile"
 @dataclass
 class ImageInfo:
     path: Path
+    member: str | None = None             # a disk inside an OVA archive
+    offset: int = 0                       # ... where its data starts in the archive
+    member_count: int = 0                 # ... how many disks the archive has
     format: Format | None = None
     file_size: int = 0
     allocated: int = 0
@@ -62,7 +68,14 @@ class ImageInfo:
 
     @property
     def name(self) -> str:
-        return self.path.name
+        return f"{self.path.name} › {self.member}" if self.member else self.path.name
+
+    @property
+    def stem(self) -> str:
+        """For naming outputs: the archive's name, plus the disk's if it has several."""
+        if self.member and self.member_count > 1:
+            return f"{self.path.stem}-{Path(self.member).stem}"
+        return self.path.stem
 
     @property
     def label(self) -> str:
@@ -73,7 +86,7 @@ class ImageInfo:
     @property
     def needs_chain_reader(self) -> bool:
         """Differencing VHD/VHDX/VDI: VertConvert&Create merges the chain itself."""
-        return self.differencing and self.format in (F.VHD, F.VHDX, F.VDI)
+        return self.differencing and self.format in (F.VHD, F.VHDX, F.VDI) and not self.member
 
     @property
     def stored_bytes(self) -> int:
@@ -113,23 +126,42 @@ def detect(path: Path, head: bytes, file_size: int, read) -> Format | None:
     if head[:4] in (VMDK_SPARSE_MAGIC, VMDK_COWD_MAGIC) or head.startswith(VMDK_DESCRIPTOR):
         return F.VMDK
     if head[:4] == QCOW_MAGIC:
-        return F.QCOW2
+        return F.QCOW if struct.unpack_from(">I", head, 4)[0] == 1 else F.QCOW2
+    if head[:4] == QED_MAGIC:
+        return F.QED
+    if head[:16] in PARALLELS_MAGICS:
+        return F.PARALLELS
     if file_size >= 512:
         for size in (512, 511):
             if read(file_size - size, 8) == vhd.COOKIE:
                 return F.VHD
+        if read(file_size - 512, 4) == DMG_TRAILER:
+            return F.DMG
     if b"createType=" in head[:4096] and b"# Extent description" in head[:4096]:
         return F.VMDK
+    if ova.is_tar(head):
+        return F.OVA
+    if b"<Envelope" in head[:4096] and b"ovf" in head[:4096].lower():
+        return F.OVF
+    if len(head) >= 0x8006 and head[0x8001:0x8006] == b"CD001":
+        return F.ISO
     guess = F.by_extension(str(path))
-    if guess is F.RAW:
-        return F.RAW
+    if guess in (F.RAW, F.ISO):
+        return guess
     return None
 
 
-def probe(path: str | os.PathLike) -> ImageInfo:
-    """Read the headers of PATH. Problems end up in info.errors, not exceptions."""
+def probe(path: str | os.PathLike, member: str | None = None) -> ImageInfo:
+    """Read the headers of PATH (or of the disk MEMBER inside the OVA archive PATH).
+
+    Problems end up in info.errors, not exceptions. An OVA with a single disk is
+    read as that disk.
+    """
     path = Path(path)
-    info = ImageInfo(path=path)
+    info = ImageInfo(path=path, member=member)
+    if path.is_dir():
+        info.errors.append(f"{path.name} is a folder. Add the disk image files in it.")
+        return info
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
     except OSError as exc:
@@ -140,35 +172,74 @@ def probe(path: str | os.PathLike) -> ImageInfo:
         if not path.is_file():
             info.errors.append(f"{path.name} is not a regular file")
             return info
-        info.file_size = st.st_size
-        info.allocated = allocated_bytes(path)
+        base, size = 0, st.st_size
+        if member is None and path.suffix.lower() == ".ova" and ova.is_tar(os.pread(fd, 512, 0)):
+            disks = ova.list_ova(path)
+            if len(disks) == 1:
+                member = info.member = disks[0].name
+            elif not disks:
+                info.format = F.OVA
+                info.errors.append(f"{path.name} contains no disk.")
+                return info
+            else:
+                info.format = F.OVA
+                info.errors.append(f"{path.name} contains {len(disks)} disks ("
+                                   f"{', '.join(d.name for d in disks)}); convert them one at a time.")
+                return info
+        if member is not None:
+            disks = ova.list_ova(path)
+            disk = next((d for d in disks if d.name == member), None)
+            if disk is None:
+                info.errors.append(f"{path.name} doesn't contain {member}.")
+                return info
+            if disk.compression:
+                info.errors.append(f"{path.name} stores {member} compressed ({disk.compression}). Unpack it "
+                                   f"first (tar -xf, then gunzip) and convert the disk file.")
+                return info
+            base, size = disk.offset, disk.size
+            info.offset, info.member_count = base, len(disks)
+        info.file_size = size
+        info.allocated = allocated_bytes(path) if member is None else size
 
         def read(offset: int, length: int) -> bytes:
-            data = os.pread(fd, length, offset)
+            length = max(0, min(length, size - offset))   # never past the end of an OVA member
+            data = os.pread(fd, length, base + offset) if length else b""
+            return data
+
+        def read_padded(offset: int, length: int) -> bytes:
+            data = read(offset, length)
             return data + bytes(length - len(data)) if len(data) < length else data
 
-        head = read(0, 64 * 1024)
-        fmt = detect(path, head, info.file_size, read)
+        head = read_padded(0, 64 * 1024)
+        fmt = detect(path if member is None else Path(member), head, size, read_padded)
         info.format = fmt
         if fmt is None:
-            info.errors.append(f"{path.name} is not a disk image VertConvert&Create recognises "
-                               "(VHD, VHDX, VDI, VMDK, QCOW2 or a raw .img).")
+            info.errors.append(f"{info.name} is not a disk image VertConvert&Create recognises "
+                               "(VDI, VMDK, VHD, VHDX, QCOW2, QED, OVA, Parallels, DMG, ISO or a raw .img).")
+            return info
+        if member is not None and fmt in (F.OVA, F.OVF):
+            info.errors.append(f"{info.name} is an appliance inside an appliance.")
             return info
         try:
-            {F.VHD: _vhd, F.VHDX: _vhdx, F.VDI: _vdi, F.VMDK: _vmdk, F.QCOW2: _qcow2,
-             F.RAW: _raw}[fmt](info, head, read)
+            {F.VHD: _vhd, F.VHDX: _vhdx, F.VDI: _vdi, F.VMDK: _vmdk, F.QCOW2: _qcow2, F.QCOW: _qcow1,
+             F.QED: _qed, F.PARALLELS: _parallels, F.DMG: _dmg, F.ISO: _raw, F.RAW: _raw,
+             F.OVA: _container, F.OVF: _container}[fmt](info, head, read_padded)
         except ConvertError as exc:
-            info.errors.append(f"{path.name}: {exc}")
+            info.errors.append(f"{info.name}: {exc}")
         except (struct.error, ValueError, IndexError) as exc:
-            info.errors.append(f"{path.name}: the {fmt.label} headers are damaged ({exc})")
-        expected = F.by_extension(str(path))
-        if expected is not None and expected is not fmt and expected is not F.RAW:
+            info.errors.append(f"{info.name}: the {fmt.label} headers are damaged ({exc})")
+        expected = F.by_extension(member or str(path))
+        if (expected is not None and expected is not fmt and expected not in (F.RAW, F.ISO)
+                and {expected, fmt} != {F.QCOW, F.QCOW2}):
             info.notes.append(f"The file name says {expected.label}, but the file is a {fmt.label} image.")
         if fmt.max_size and info.virtual_size > fmt.max_size:
             info.warnings.append(f"The disk is larger than {fmt.label} allows ({fmt.max_label}).")
         return info
     except OSError as exc:
         info.errors.append(f"Cannot read {path.name}: {exc.strerror or exc}")
+        return info
+    except ConvertError as exc:
+        info.errors.append(str(exc))
         return info
     finally:
         os.close(fd)
@@ -328,5 +399,64 @@ def _qcow2(info: ImageInfo, head: bytes, read) -> None:
 def _raw(info: ImageInfo, head: bytes, read) -> None:
     info.virtual_size = info.file_size
     info.subformat = ""
+    if info.format is F.ISO:
+        info.notes.append("A CD/DVD image: it is read as a disk (useful for hybrid ISOs that also boot "
+                          "from a hard disk or USB stick).")
     if info.file_size % 512:
         info.warnings.append("The size is not a whole number of 512-byte sectors.")
+
+
+def _qcow1(info: ImageInfo, head: bytes, read) -> None:
+    backing_off, backing_len, _mtime, size, cluster_bits, _l2, _pad, crypt = struct.unpack_from(
+        ">QIIQBBHI", head, 8)
+    info.virtual_size = size
+    info.subformat = "version 1"
+    if 9 <= cluster_bits <= 16:
+        info.block_size = 1 << cluster_bits
+    if crypt:
+        info.encrypted = True
+        info.errors.append("The QCOW image is encrypted; decrypt it with qemu-img first.")
+    if backing_off and 0 < backing_len < 1024:
+        info.backing_file = read(backing_off, backing_len).decode("utf-8", "replace")
+        info.notes.append(f"Based on {info.backing_file}; qemu-img merges it with its parent.")
+
+
+def _qed(info: ImageInfo, head: bytes, read) -> None:
+    cluster, _table, _hsize, features = struct.unpack_from("<IIIQ", head, 4)
+    size, = struct.unpack_from("<Q", head, 48)
+    backing_off, backing_len = struct.unpack_from("<II", head, 56)
+    info.virtual_size = size
+    info.block_size = cluster
+    if features & 1 and backing_off and 0 < backing_len < 1024:
+        info.backing_file = read(backing_off, backing_len).decode("utf-8", "replace")
+        info.notes.append(f"Based on {info.backing_file}; qemu-img merges it with its parent.")
+    if features & 2:
+        info.warnings.append("The QED image was not closed cleanly; qemu-img checks it while reading.")
+
+
+def _parallels(info: ImageInfo, head: bytes, read) -> None:
+    version, _heads, _cyl, sectors_per_cluster, _bat, nb_sectors = struct.unpack_from("<IIIIIQ", head, 16)
+    if head[:16] == PARALLELS_MAGICS[0]:
+        nb_sectors &= 0xFFFFFFFF
+    info.virtual_size = nb_sectors * 512
+    info.block_size = sectors_per_cluster * 512
+    info.subformat = "expanding"
+    info.notes.append("Parallels Desktop keeps snapshots as separate files; this one is read as it is.")
+
+
+def _dmg(info: ImageInfo, head: bytes, read) -> None:
+    trailer = read(info.file_size - 512, 512)
+    sectors, = struct.unpack_from(">Q", trailer, 0x1EC)
+    info.virtual_size = sectors * 512
+    info.subformat = "UDIF"
+    info.notes.append("DMG files compressed with bzip2 or LZFSE need qemu-img's DMG modules "
+                      "(on some distributions a separate package).")
+
+
+def _container(info: ImageInfo, head: bytes, read) -> None:
+    if info.format is F.OVF:
+        disks = ova.list_ovf(info.path)
+        names = ", ".join(d.name for d in disks) or "none"
+        info.errors.append(f"{info.path.name} describes an appliance; add its disk files ({names}) instead.")
+    else:
+        info.errors.append(f"{info.path.name} is an appliance; add it as a whole to convert its disks.")

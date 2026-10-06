@@ -59,19 +59,62 @@ def run(qemu, source, target, out=None, **kw):
     return plan, execute(plan, qemu)
 
 
-@pytest.mark.parametrize("target", ["vdi", "vmdk", "vhd", "vhdx", "qcow2", "raw"])
+@pytest.mark.parametrize("target", ["vdi", "vmdk", "vhd", "vhdx", "qcow2", "qed", "raw"])
 @pytest.mark.parametrize("fixed", [False, True])
 def test_every_format(qemu, vhdx_source, target, fixed):
     source, expected = vhdx_source
     t = parse_target(target, fixed=fixed)
     plan, outcome = run(qemu, source, t)
     assert outcome.verified and outcome.output.exists()
-    assert not Path(str(outcome.output) + ".part").exists()
+    assert not list(source.parent.glob("*.part"))
+    assert outcome.files == t.output_files(outcome.output, plan.size)
     info = probe(outcome.output)
     assert info.format is t.format, info.errors
     if fixed and t.format in (F.VDI, F.VHD, F.VHDX):
         assert info.subformat == "fixed"
+    if t.format is F.VMDK:
+        assert info.subformat == ("monolithicFlat" if fixed else "monolithicSparse")
     assert as_raw(qemu, outcome.output, t.format.driver) == expected
+
+
+@pytest.mark.parametrize("fixed", [False, True])
+def test_vmdk_in_2gb_files(qemu, tmp_path, fixed):
+    size = 2 * 1024 * MIB + 3 * MIB      # just over 2 GB: two data files
+    data = {0: b"first" * 100, (2 * 1024 * MIB) // SECTOR + 5: b"second" * 80}
+    write_vhd(tmp_path / "big.vhd", size, data)
+    t = parse_target("vmdk", fixed=fixed, split=True)
+    plan, outcome = run(qemu, tmp_path / "big.vhd", t)
+    letter = "f" if fixed else "s"
+    assert [f.name for f in outcome.files] == ["big.vmdk", f"big-{letter}001.vmdk", f"big-{letter}002.vmdk"]
+    assert probe(outcome.output).subformat == ("twoGbMaxExtentFlat" if fixed else "twoGbMaxExtentSparse")
+    info = inspect_image(outcome.output, qemu)
+    assert info.ok and info.virtual_size == size and len(info.extent_files) == 2
+    assert verify_images(inspect_image(tmp_path / "big.vhd"), info, qemu)[0]
+    assert any("keep them together" in n for n in plan.notes)
+
+
+def test_split_vmdk_never_replaces_a_data_file(qemu, tmp_path, monkeypatch):
+    write_vhd(tmp_path / "d.vhd", 4 * MIB, {0: b"x" * SECTOR})
+    (tmp_path / "d-flat.vmdk").write_bytes(b"someone else's")
+    t = parse_target("vmdk", fixed=True)
+    plan = make_plan(Job(source=tmp_path / "d.vhd", target=t, output=tmp_path / "d.vmdk"), qemu)
+    assert not plan.ok and "d-flat.vmdk already exists" in plan.errors[0]
+    # ...and if it appears during the run, nothing is published and the copy is kept
+    plan = make_plan(Job(source=tmp_path / "d.vhd", target=t, output=tmp_path / "e.vmdk"), qemu)
+    assert plan.ok
+    real_convert = qemu.convert
+
+    def convert_and_interfere(*a, **kw):
+        real_convert(*a, **kw)
+        (tmp_path / "e-flat.vmdk").write_bytes(b"appeared")
+
+    monkeypatch.setattr(qemu, "convert", convert_and_interfere)
+    with pytest.raises(ConvertError, match="e-flat.vmdk appeared"):
+        execute(plan, qemu)
+    assert (tmp_path / "e-flat.vmdk").read_bytes() == b"appeared"
+    assert not (tmp_path / "e.vmdk").exists()
+    kept = list(tmp_path.glob("e.vmdk.*.part"))
+    assert len(kept) == 1 and sorted(p.name for p in kept[0].iterdir()) == ["e-flat.vmdk", "e.vmdk"]
 
 
 def test_back_to_hyperv(qemu, tmp_path):
@@ -175,7 +218,7 @@ def test_azure_rounds_up_to_whole_megabytes(qemu, tmp_path):
 def test_stream_vmdk_is_padded_to_grains(qemu, tmp_path):
     size = 3 * MIB + 3 * SECTOR
     write_vhd(tmp_path / "odd.vhd", size, {size // SECTOR - 1: b"t" * SECTOR})
-    plan, outcome = run(qemu, tmp_path / "odd.vhd", parse_target("ova"))
+    plan, outcome = run(qemu, tmp_path / "odd.vhd", parse_target("esxi"))
     assert plan.size % 65536 == 0 and plan.size >= size
     assert probe(outcome.output).subformat == "streamOptimized"
     raw = as_raw(qemu, outcome.output, "vmdk")
@@ -305,12 +348,21 @@ def test_parse_target():
     assert parse_target("hyperv").format is F.VHDX
     t = parse_target("azure")
     assert t.format is F.VHD and t.fixed and t.azure
-    t = parse_target("ova")
+    t = parse_target("esxi")
     assert t.format is F.VMDK and t.stream and not t.fixed
-    assert parse_target("vmdk", fixed=True).fixed is False   # no single-file fixed VMDK
+    t = parse_target("ova")
+    assert t.format is F.OVA and t.vmdk_subformat == "streamOptimized" and t.label == "OVA (appliance)"
+    assert parse_target("vmdk", fixed=True).vmdk_subformat == "monolithicFlat"
+    assert parse_target("vmdk", split=True).label == "VMDK (dynamic, 2 GB files)"
+    assert parse_target("vmdk", fixed=True, stream=True).fixed is False
+    assert parse_target("qed", fixed=True).fixed is False
+    assert parse_target("proxmox").format is F.QCOW2
     assert parse_target("vpc").format is F.VHD
-    with pytest.raises(ConvertError):
-        parse_target("iso")
+    for read_only in ("iso", "dmg", "parallels", "qcow", "ovf"):
+        with pytest.raises(ConvertError, match="read but not written"):
+            parse_target(read_only)
+    with pytest.raises(ConvertError, match="Unknown"):
+        parse_target("nonsense")
 
 
 def test_nbd_server_serves_qemu(qemu, tmp_path):

@@ -1,7 +1,9 @@
 """The command line interface."""
 
+import io
 import json
 import os
+import tarfile
 
 import pytest
 from imagewriter import MIB, SECTOR, gpt_sectors, to_sectors, write_vdi, write_vhd, write_vhdx
@@ -107,6 +109,8 @@ def test_formats_and_doctor(qemu, capsys):
     assert cli.main(["formats"]) == 0
     out = capsys.readouterr().out
     assert "vhdx" in out and "azure" in out
+    read_only = out.split("Read only")[1].split("Targets")[0]
+    assert all(k in read_only for k in ("parallels", "dmg", "iso", "qcow ")) and "qcow2" not in read_only
     assert cli.main(["doctor"]) == 0
     assert "qemu-img" in capsys.readouterr().out
 
@@ -145,3 +149,41 @@ def test_one_failure_does_not_stop_the_rest(qemu, images, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "disk full" in out and calls == ["Win.vhdx", "Linux.vdi"]
     assert probe(images / "Linux.vhdx").format is F.VHDX
+
+
+def test_appliance_disks_one_by_one(qemu, images, tmp_path, capsys):
+    """An OVA made from a disk, then an OVA with two disks: info and convert take each disk."""
+    assert cli.main(["convert", "-q", "-t", "ova", str(images / "Linux.vdi")]) == 0
+    one = images / "Linux.ova"
+    assert probe(one).member == "Linux-disk1.vmdk"
+    with tarfile.open(one) as tar:
+        members = {m.name: tar.extractfile(m).read() for m in tar.getmembers()}
+    ovf = members["Linux.ovf"].decode().replace('ovf:id="file1" ovf:href="Linux-disk1.vmdk"',
+                                                 'ovf:id="file1" ovf:href="a/disk.vmdk"')
+    ovf = ovf.replace("</References>", '<File ovf:id="file2" ovf:href="b/disk.vmdk"/></References>')
+    ovf = ovf.replace("</DiskSection>", '<Disk ovf:capacity="8" ovf:capacityAllocationUnits="byte * 2^20" '
+                                        'ovf:diskId="vmdisk2" ovf:fileRef="file2"/></DiskSection>')
+    two = tmp_path / "Two.ova"
+    with tarfile.open(two, "w", format=tarfile.USTAR_FORMAT) as tar:
+        for name, data in (("Two.ovf", ovf.encode()), ("a/disk.vmdk", members["Linux-disk1.vmdk"]),
+                           ("b/disk.vmdk", members["Linux-disk1.vmdk"])):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    capsys.readouterr()
+    assert cli.main(["info", str(two)]) == 0
+    out = capsys.readouterr().out
+    assert "Two.ova › a/disk.vmdk" in out and "Two.ova › b/disk.vmdk" in out
+    assert cli.main(["convert", "-q", "-t", "vdi", str(two)]) == 0
+    assert sorted(p.name for p in tmp_path.glob("Two*.vdi")) == ["Two-disk-2.vdi", "Two-disk.vdi"]
+    with pytest.raises(SystemExit, match="several disks"):
+        cli.main(["convert", "-q", "-o", str(tmp_path / "x.vdi"), str(two)])
+
+
+def test_split_vmdk(qemu, images, capsys):
+    assert cli.main(["convert", "-q", "-t", "vmdk", "--split", "--fixed", str(images / "Linux.vdi")]) == 0
+    assert "2 files" in capsys.readouterr().out
+    assert sorted(p.name for p in images.glob("Linux*.vmdk")) == ["Linux-f001.vmdk", "Linux.vmdk"]
+    assert cli.main(["convert", "-q", "-t", "vhdx", "--split", str(images / "Win.vhdx"),
+                     "-o", str(images / "copy.vhdx")]) == 0
+    assert "Only VMDK files can be split" in capsys.readouterr().out

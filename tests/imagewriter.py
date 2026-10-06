@@ -1,4 +1,4 @@
-"""Write small VHD, VHDX and VDI test images, including differencing ones.
+"""Write small VHD, VHDX, VDI and DMG test images, including differencing ones.
 
 Independent of the readers in vertconvert.core: written from the format
 specifications, so the tests check the readers against the specs (and against
@@ -13,6 +13,7 @@ bitmaps returns visibly wrong data.
 
 from __future__ import annotations
 
+import base64
 import struct
 import time
 import uuid
@@ -425,3 +426,44 @@ def write_vdi(path: Path, size: int, blocks_content: dict[int, bytes], kind: str
         f.seek(off_data)
         f.write(data)
     return image
+
+
+# ---------------------------------------------------------------------- DMG (UDIF)
+
+DMG_ZERO, DMG_RAW, DMG_ZLIB, DMG_END = 0x00000000, 0x00000001, 0x80000005, 0xFFFFFFFF
+
+
+def write_dmg(path: Path, data: bytes, chunk: int = 256 * 1024) -> None:
+    """A read-only Apple disk image (UDIF) of DATA: zero chunks, raw chunks and zlib chunks
+    in turn, described by a "mish" block table in the XML property list, then the "koly"
+    trailer. DATA's length must be a multiple of 512."""
+    assert len(data) % SECTOR == 0
+    fork = bytearray()
+    chunks = []
+    for n, start in enumerate(range(0, len(data), chunk)):
+        piece = data[start:start + chunk]
+        sector, count = start // SECTOR, len(piece) // SECTOR
+        if not piece.strip(b"\0"):
+            chunks.append((DMG_ZERO, sector, count, len(fork), 0))
+            continue
+        stored = zlib.compress(piece) if n % 2 else piece
+        chunks.append((DMG_ZLIB if n % 2 else DMG_RAW, sector, count, len(fork), len(stored)))
+        fork += stored
+    chunks.append((DMG_END, len(data) // SECTOR, 0, len(fork), 0))
+    mish = bytearray(204)
+    struct.pack_into(">4sIQQQII", mish, 0, b"mish", 1, 0, len(data) // SECTOR, 0, 0x208, 0)
+    struct.pack_into(">I", mish, 200, len(chunks))
+    for kind, sector, count, offset, length in chunks:
+        mish += struct.pack(">IIQQQQ", kind, 0, sector, count, offset, length)
+    plist = ('<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict>'
+             '<key>resource-fork</key><dict><key>blkx</key><array><dict>'
+             '<key>Attributes</key><string>0x0050</string><key>Data</key>'
+             f'<data>{base64.b64encode(bytes(mish)).decode()}</data>'
+             '<key>Name</key><string>whole disk</string></dict></array></dict></dict></plist>\n').encode()
+    koly = bytearray(512)
+    struct.pack_into(">4sIII", koly, 0, b"koly", 4, 512, 1)
+    struct.pack_into(">QQQ", koly, 16, 0, 0, len(fork))         # running offset, data fork offset/length
+    struct.pack_into(">II", koly, 56, 1, 1)                      # segment 1 of 1
+    struct.pack_into(">QQ", koly, 216, len(fork), len(plist))    # XML offset, length
+    struct.pack_into(">IQ", koly, 488, 1, len(data) // SECTOR)   # image variant, sectors
+    path.write_bytes(bytes(fork) + plist + bytes(koly))

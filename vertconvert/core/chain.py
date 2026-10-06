@@ -268,7 +268,7 @@ class ChainReader:
 
 def read_head(info: ImageInfo, length: int = 128 * 1024) -> bytes | None:
     """The first bytes of the virtual disk, if VertConvert&Create can read the image itself."""
-    if info.format not in LAYERS or not info.ok:
+    if info.format not in LAYERS or not info.ok or info.member:
         return None
     if info.differencing and (not info.chain or info.chain[-1].differencing):
         return None

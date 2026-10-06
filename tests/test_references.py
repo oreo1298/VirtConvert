@@ -15,10 +15,12 @@ import pytest
 from conftest import vboxmanage
 from imagewriter import MIB, SECTOR, flatten, write_vdi, write_vhd, write_vhdx
 
+from vertconvert.core import create as C
 from vertconvert.core.chain import ChainReader
 from vertconvert.core.convert import Job, execute, make_plan, parse_target
 from vertconvert.core.images import inspect_image
 from vertconvert.core.probe import probe
+from vertconvert.core.system import find_program
 
 
 def content(size, count, seed):
@@ -61,15 +63,20 @@ def vbox(tmp_path):
     return VBox(exe, home)
 
 
-def convert(qemu, source: Path, target: str, out: Path):
-    plan = make_plan(Job(source=source, target=parse_target(target), output=out), qemu)
+def convert(qemu, source: Path, target: str, out: Path, member=None):
+    """TARGET: a format or preset name, optionally with -flat or -split (VMDK variants)."""
+    name, _, variant = target.partition("-")
+    t = parse_target(name, fixed=variant == "flat", split=variant == "split")
+    info = inspect_image(source, qemu, member=member)
+    plan = make_plan(Job(source=source, target=t, output=out), qemu, info)
     assert plan.ok, plan.errors
     return execute(plan, qemu)
 
 
 @pytest.mark.vbox
 @pytest.mark.parametrize("target,ext", [("vdi", "vdi"), ("vmdk", "vmdk"), ("vhd", "vhd"), ("vhdx", "vhdx"),
-                                        ("azure", "vhd"), ("ova", "vmdk")])
+                                        ("azure", "vhd"), ("esxi", "vmdk"),
+                                        ("qed", "qed"), ("vmdk-split", "vmdk"), ("vmdk-flat", "vmdk")])
 def test_virtualbox_reads_our_output(qemu, vbox, tmp_path, target, ext):
     size = 10 * MIB + 3 * SECTOR
     data = content(size, 800, 1)
@@ -81,6 +88,56 @@ def test_virtualbox_reads_our_output(qemu, vbox, tmp_path, target, ext):
     expected = flatten(size, data)
     assert got[:size] == expected
     assert got[size:] == bytes(len(got) - size)       # only zeros were added (Azure, stream VMDK)
+
+
+@pytest.mark.vbox
+def test_virtualbox_imports_our_ova(qemu, vbox, tmp_path):
+    size = 10 * MIB + 3 * SECTOR
+    data = content(size, 800, 8)
+    write_vhdx(tmp_path / "src.vhdx", size, data)
+    convert(qemu, tmp_path / "src.vhdx", "ova", tmp_path / "Appliance.ova")
+    plan = vbox.run("import", str(tmp_path / "Appliance.ova"), "--dry-run")
+    assert "Number of CPUs: 2" in plan and "Guest memory: 2048 MB" in plan, plan
+    vms = tmp_path / "vms"
+    vbox.run("import", str(tmp_path / "Appliance.ova"), "--vsys", "0", "--vmname", "imported",
+             "--basefolder", str(vms))
+    [disk] = [p for p in vms.rglob("*") if p.suffix.lower() in (".vmdk", ".vdi")]
+    got = vbox.read(disk)
+    assert got[:size] == flatten(size, data) and got[size:] == bytes(len(got) - size)
+
+
+@pytest.mark.vbox
+def test_we_read_virtualbox_ova(qemu, vbox, tmp_path):
+    raw = tmp_path / "disk.raw"
+    raw.write_bytes(os.urandom(8 * MIB))
+    vbox.run("convertfromraw", str(raw), str(tmp_path / "disk.vdi"), "--format", "VDI")
+    vbox.run("createvm", "--name", "exported", "--ostype", "Linux_64", "--register",
+             "--basefolder", str(tmp_path / "vms"))
+    vbox.run("storagectl", "exported", "--name", "SATA", "--add", "sata")
+    vbox.run("storageattach", "exported", "--storagectl", "SATA", "--port", "0", "--type", "hdd",
+             "--medium", str(tmp_path / "disk.vdi"))
+    vbox.run("export", "exported", "--output", str(tmp_path / "exported.ova"))
+    info = inspect_image(tmp_path / "exported.ova", qemu)
+    assert info.ok and info.member and info.subformat == "streamOptimized", info.errors
+    convert(qemu, tmp_path / "exported.ova", "vdi", tmp_path / "back.vdi")
+    assert vbox.read(tmp_path / "back.vdi") == raw.read_bytes()
+
+
+@pytest.mark.vbox
+@pytest.mark.parametrize("name,fs", [("linux.vhdx", "ext4"), ("windows.vhdx", "ntfs"), ("shared.vdi", "exfat"),
+                                     ("data.vmdk", "fat32"), ("empty.vhd", "")])
+def test_virtualbox_reads_new_disks(qemu, vbox, tmp_path, name, fs):
+    if fs and find_program(*C.FS_BY_KEY[fs].tools) is None:
+        pytest.skip(f"no mkfs for {fs}")
+    out = tmp_path / name
+    target = parse_target(out.suffix[1:])
+    disk = C.NewDisk(output=out, target=target, size=200 * MIB, scheme="gpt" if fs else "none", filesystem=fs)
+    plan = C.make_create_plan(disk, qemu)
+    assert plan.ok, plan.errors
+    C.create_disk(plan, qemu)
+    raw = tmp_path / "qemu.raw"
+    qemu.check_run(["convert", "-O", "raw", str(out), str(raw)], "test")
+    assert vbox.read(out) == raw.read_bytes()
 
 
 @pytest.mark.vbox

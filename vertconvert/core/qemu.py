@@ -44,6 +44,23 @@ def source_spec(path: str | os.PathLike, driver: str) -> str:
     return spec(path, driver)
 
 
+def member_spec(path: str | os.PathLike, driver: str, offset: int, size: int) -> str:
+    """A disk stored inside an archive (OVA): qemu-img reads it at its offset."""
+    data: dict = {"driver": driver}
+    if driver == "vpc":
+        data["force_size_calc"] = "current_size"
+    data["file"] = {"driver": "raw", "offset": offset, "size": size,
+                    "file": {"driver": "file", "filename": os.path.abspath(path)}}
+    return "json:" + json.dumps(data)
+
+
+def image_spec(info) -> str:
+    """The qemu-img specification of an ImageInfo (a file, or a disk inside an OVA)."""
+    if info.member:
+        return member_spec(info.path, info.format.driver, info.offset, info.file_size)
+    return source_spec(info.path, info.format.driver)
+
+
 def nbd_spec(socket_path: str, export: str) -> str:
     """The disk served by nbd.NbdServer, as a raw image."""
     return "json:" + json.dumps({"driver": "raw", "file": {

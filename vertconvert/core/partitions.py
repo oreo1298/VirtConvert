@@ -1,14 +1,23 @@
-"""Recognise the partition table at the start of a virtual disk.
+"""Partition tables: recognise the one at the start of a virtual disk, and write new ones.
 
-Used to tell whether the guest boots with UEFI (GPT) or BIOS (MBR), which
+Reading tells whether the guest boots with UEFI (GPT) or BIOS (MBR), which
 decides "Enable EFI" in VirtualBox and the generation of a Hyper-V VM.
+Writing makes the GPT or MBR of a new disk (create.py).
 """
 
 from __future__ import annotations
 
+import os
 import struct
 import uuid
+import zlib
 from dataclasses import dataclass, field
+
+BASIC_DATA = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7"
+LINUX_DATA = "0fc63daf-8483-4772-8e79-3d69d8477de4"
+ALIGN = 1 << 20             # partitions start and end on whole megabytes
+SECTOR = 512
+GPT_ENTRIES = 128
 
 GPT_TYPES = {
     "c12a7328-f81f-11d2-ba4b-00a0c93ec93b": "EFI system",
@@ -69,10 +78,13 @@ class PartitionTable:
         if self.scheme == "gpt":
             if "BIOS boot" in kinds:
                 return "both"
-            return "uefi"
+            # a GPT disk boots with UEFI from its EFI system partition; without one it's a data disk
+            return "uefi" if "EFI system" in kinds or self.has_boot_code else ""
         if self.scheme == "mbr":
             if "EFI system" in kinds and not self.has_boot_code:
                 return "uefi"
+            if not self.has_boot_code and not any(p.bootable for p in self.partitions):
+                return ""      # no boot code and nothing active: a data disk
             return "bios"
         return ""
 
@@ -150,3 +162,70 @@ def _mbr(head: bytes) -> PartitionTable | None:
     if not table.partitions:
         return None  # a filesystem written to the whole disk, or an empty MBR
     return table
+
+
+# ---------------------------------------------------------------------- writing
+
+def single_partition(disk_size: int, scheme: str) -> tuple[int, int]:
+    """Where one partition filling a new disk goes, as (offset, length) in bytes: from 1 MB
+    to the last whole megabyte before the end (GPT keeps its backup table there)."""
+    lbas = disk_size // SECTOR
+    step = ALIGN // SECTOR
+    last_usable = lbas - 34 if scheme == "gpt" else lbas - 1
+    end = (last_usable + 1) // step * step
+    return ALIGN, max(0, end - step) * SECTOR
+
+
+def gpt_table(disk_size: int, partitions: list[tuple[int, int, str, str]]) -> dict[int, bytes]:
+    """A protective MBR and the primary and backup GPT, as {offset: bytes}.
+
+    PARTITIONS: (offset, length, type GUID, name) in bytes."""
+    lbas = disk_size // SECTOR
+    entries_sectors = GPT_ENTRIES * 128 // SECTOR
+    entries = bytearray(GPT_ENTRIES * 128)
+    for i, (offset, length, type_guid, name) in enumerate(partitions):
+        struct.pack_into("<16s16sQQQ", entries, i * 128, uuid.UUID(type_guid).bytes_le, uuid.uuid4().bytes_le,
+                         offset // SECTOR, (offset + length) // SECTOR - 1, 0)
+        label = name.encode("utf-16-le")[:72]
+        entries[i * 128 + 56:i * 128 + 56 + len(label)] = label
+    entries_crc = zlib.crc32(entries)
+    disk_guid = uuid.uuid4().bytes_le
+
+    def header(current: int, backup: int, entries_lba: int) -> bytes:
+        h = bytearray(92)
+        struct.pack_into("<8sIIIIQQQQ16sQIII", h, 0, b"EFI PART", 0x00010000, 92, 0, 0, current, backup,
+                         2 + entries_sectors, lbas - 2 - entries_sectors, disk_guid, entries_lba,
+                         GPT_ENTRIES, 128, entries_crc)
+        struct.pack_into("<I", h, 16, zlib.crc32(h))
+        return bytes(h).ljust(SECTOR, b"\0")
+
+    protective = mbr_table([(SECTOR, min(lbas - 1, 0xFFFFFFFF) * SECTOR, 0xEE)], signature=False)[0]
+    return {
+        0: protective,
+        SECTOR: header(1, lbas - 1, 2),
+        2 * SECTOR: bytes(entries),
+        (lbas - 1 - entries_sectors) * SECTOR: bytes(entries),
+        (lbas - 1) * SECTOR: header(lbas - 1, 1, lbas - 1 - entries_sectors),
+    }
+
+
+def _chs(lba: int) -> bytes:
+    """The old cylinder/head/sector address (255 heads, 63 sectors), capped like every tool does."""
+    cylinder, rest = divmod(lba, 255 * 63)
+    head, sector = divmod(rest, 63)
+    if cylinder > 1023:
+        cylinder, head, sector = 1023, 254, 62
+    return bytes((head, (sector + 1) | ((cylinder >> 2) & 0xC0), cylinder & 0xFF))
+
+
+def mbr_table(partitions: list[tuple[int, int, int]], signature: bool = True) -> dict[int, bytes]:
+    """An MBR without boot code. PARTITIONS: (offset, length, type) in bytes, at most four."""
+    mbr = bytearray(SECTOR)
+    if signature:       # Windows identifies MBR disks by this number
+        mbr[440:444] = (int.from_bytes(os.urandom(4), "little") | 1).to_bytes(4, "little")
+    for i, (offset, length, ptype) in enumerate(partitions):
+        first, count = offset // SECTOR, length // SECTOR
+        struct.pack_into("<B3sB3sII", mbr, 446 + 16 * i, 0, _chs(first), ptype, _chs(first + count - 1),
+                         first, count)
+    mbr[510:512] = b"\x55\xaa"
+    return {0: bytes(mbr)}
