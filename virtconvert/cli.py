@@ -180,6 +180,13 @@ def cmd_convert(args) -> int:
         progress = Progress(args.quiet)
         try:
             outcome = execute(plan, qemu, progress)
+        except OperationCancelled:
+            raise
+        except ConvertError as exc:
+            progress.finish()
+            print(f"  ✕ {exc}")
+            failures += 1
+            continue
         finally:
             progress.finish()
         check = ", verified identical to the source" if outcome.verified else ""

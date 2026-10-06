@@ -96,9 +96,16 @@ class Layer:
     def pread(self, length: int, offset: int) -> bytes:
         data = os.pread(self.fd, length, offset)
         if len(data) < length:
-            # reading past the end of a truncated file: the rest reads as zeros
-            data += bytes(length - len(data))
+            # never invent zeros: a converted copy would "verify" against the same zeros
+            raise ImageFormatError(f"{self.path.name} is cut off: it ends at {self.file_size:,} bytes, "
+                                   f"but data is expected up to {offset + length:,}. Was the copy interrupted?")
         return data
+
+    def check_extent(self, offset: int, length: int, what: str = "a block") -> None:
+        """Refuse a file whose block table points past its end (like qemu-img does)."""
+        if offset + length > self.file_size:
+            raise ImageFormatError(f"{self.path.name} is cut off: {what} at {offset:,} lies past the end of "
+                                   f"the file ({self.file_size:,} bytes). Was the copy interrupted?")
 
     def allocated_extents(self) -> Iterator[tuple[int, int]]:
         """(virtual offset, length) of the parts stored in this file."""

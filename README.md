@@ -257,8 +257,12 @@ Limits: VHD files hold up to 2040 GB, VHDX files up to 64 TB.
 - **"The VHDX was not closed cleanly"**: the VM was running or Windows crashed, and the file's log
   still holds changes. Shut the VM down in Hyper-V, or use **Repair…** (`virtconvert repair`),
   which applies the log to the file like Hyper-V would. Make a copy first if you can.
-- **"This disk uses 4 KB sectors"**: VirtualBox shows disks with 512-byte sectors, so a guest
-  installed on a 4 KB-sector VHDX won't find its partitions there. Keep such disks as VHDX.
+- **"This disk uses 4 KB sectors"**: VirtualBox (and qemu-img's VHDX writer) only offer
+  512-byte sectors, so a guest installed on a 4 KB-sector VHDX won't find its partitions in the
+  copy. Data disks without a partition table convert fine; for the others keep using the original
+  VHDX in Hyper-V.
+- **"… is cut off"**: the file is shorter than its block table says, usually an interrupted copy.
+  Copy it again from the Hyper-V host.
 - **VirtualBox says the UUID already exists**: every conversion gets a new ID, but a copied file
   keeps its ID. Convert again, or give the copy a new ID with
   `VBoxManage internalcommands sethduuid file.vdi`.

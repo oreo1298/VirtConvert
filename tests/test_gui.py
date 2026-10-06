@@ -197,3 +197,28 @@ def test_without_qemu(app):
     assert win.qemu_text.text() == "qemu-img missing"
     assert win.act_install_qemu.isVisible()
     win.close()
+
+
+def test_typed_name_is_used(window, images):
+    add(window, images / "Linux.vdi")
+    window.table.selectRow(0)
+    pump()
+    window.out_edit.setText(str(images / "typed.vhdx"))   # no Enter, straight to Convert
+    window.convert_all()
+    wait_for(lambda: window.model.items[0].state in (mw.DONE, mw.FAILED) and not window.runner.busy)
+    assert window.model.items[0].state == mw.DONE
+    assert probe(images / "typed.vhdx").format is F.VHDX
+    assert not (images / "Linux.vhdx").exists()
+
+
+def test_replacing_one_file_is_not_a_global_setting(window, images, monkeypatch):
+    (images / "existing.vhdx").write_bytes(b"old")
+    add(window, images / "Linux.vdi")
+    window.table.selectRow(0)
+    pump()
+    monkeypatch.setattr(mw.QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (str(images / "existing.vhdx"), "")))
+    window.choose_output()
+    item = window.model.items[0]
+    assert item.overwrite and not window.overwrite_chk.isChecked()
+    assert item.state == mw.READY and any("will be replaced" in w for w in item.plan.warnings)

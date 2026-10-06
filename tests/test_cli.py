@@ -127,3 +127,21 @@ def test_files_open_the_app(images, monkeypatch):
     monkeypatch.setattr(app, "run_gui", lambda files: opened.setdefault("files", files) and 0)
     cli.main([str(images / "Win.vhdx")])
     assert opened["files"] == [str(images / "Win.vhdx")]
+
+
+def test_one_failure_does_not_stop_the_rest(qemu, images, monkeypatch, capsys):
+    from virtconvert.core.errors import ConvertError
+    real = cli.execute
+    calls = []
+
+    def flaky(plan, *a, **k):
+        calls.append(plan.info.name)
+        if len(calls) == 1:
+            raise ConvertError("disk full")
+        return real(plan, *a, **k)
+
+    monkeypatch.setattr(cli, "execute", flaky)
+    assert cli.main(["convert", "-q", str(images / "Win.vhdx"), str(images / "Linux.vdi")]) == 1
+    out = capsys.readouterr().out
+    assert "disk full" in out and calls == ["Win.vhdx", "Linux.vdi"]
+    assert probe(images / "Linux.vhdx").format is F.VHDX

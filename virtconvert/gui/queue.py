@@ -39,6 +39,7 @@ class Item:
     output_custom: bool = False
     parents: dict[Path, Path] = field(default_factory=dict)
     force_parent: bool = False
+    overwrite: bool = False      # the user agreed to replace this item's output
     state: str = INSPECTING
     stage: str = ""
     done: int = 0

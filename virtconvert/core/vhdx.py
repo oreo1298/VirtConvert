@@ -303,11 +303,28 @@ class VhdxLayer(Layer):
             self.bat.frombytes(self.pread(entries * 8, info.bat_offset))
             if sys.byteorder == "big":
                 self.bat.byteswap()
+            self._check_bat()
             self._bitmaps = LRU(2)
             self._runs = LRU(256)
         except Exception:
             self.close()
             raise
+
+    def _check_bat(self) -> None:
+        info = self.info
+        cr = info.chunk_ratio
+        last_payload = last_bitmap = -1
+        for i, entry in enumerate(self.bat):
+            state = entry & 7
+            if (i + 1) % (cr + 1) == 0:          # sector bitmap entry
+                if state == SB_PRESENT:
+                    last_bitmap = max(last_bitmap, entry >> 20)
+            elif state in (FULLY_PRESENT, PARTIALLY_PRESENT):
+                last_payload = max(last_payload, entry >> 20)
+        if last_payload >= 0:
+            self.check_extent(last_payload << 20, info.block_size)
+        if last_bitmap >= 0:
+            self.check_extent(last_bitmap << 20, MIB, "a sector bitmap")
 
     def _block_runs(self, block: int) -> list[tuple[int, int, bool]] | None:
         info = self.info

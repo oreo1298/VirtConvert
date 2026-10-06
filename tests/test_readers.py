@@ -355,3 +355,42 @@ def test_blank_disk_has_no_table():
     fat[0x1C6:0x1CA] = b"\x12\x34\x56\x78"
     fat[510:512] = b"\x55\xaa"
     assert analyze(bytes(fat)).scheme == "none"
+
+
+# ---------------------------------------------------------------------- truncated files
+
+
+@pytest.mark.parametrize("fmt", ["vhd", "vhdx", "vdi"])
+def test_cut_off_files_are_refused(tmp_path, fmt):
+    size = 8 * MIB
+    path = tmp_path / f"d.{fmt}"
+    if fmt == "vhd":
+        write_vhd(path, size, {s: b"x" * SECTOR for s in range(0, 16384, 7)})
+    elif fmt == "vhdx":
+        write_vhdx(path, size, {s: b"x" * SECTOR for s in range(0, 16384, 7)}, block_size=MIB)
+    else:
+        write_vdi(path, size, {b: os.urandom(MIB) for b in range(8)})
+    data = path.read_bytes()
+    path.write_bytes(data[:len(data) - 3 * MIB])        # an interrupted copy
+    info = inspect_image(path)
+    assert not info.ok and any("cut off" in e for e in info.errors), info.errors
+
+
+def test_cut_off_parent_is_refused(tmp_path):
+    size = 8 * MIB
+    b = write_vhdx(tmp_path / "base.vhdx", size, {s: b"p" * SECTOR for s in range(0, 16384, 3)}, block_size=MIB)
+    write_vhdx(tmp_path / "child.avhdx", size, {5: b"c" * SECTOR}, "differencing",
+               parent=tmp_path / "base.vhdx", parent_data_guid=b)
+    data = (tmp_path / "base.vhdx").read_bytes()
+    (tmp_path / "base.vhdx").write_bytes(data[:len(data) - 2 * MIB])
+    info = inspect_image(tmp_path / "child.avhdx")
+    assert not info.ok and any("base.vhdx is cut off" in e for e in info.errors)
+
+
+def test_short_reads_raise(tmp_path):
+    from virtconvert.core.errors import ImageFormatError
+    from virtconvert.core.layers import RawLayer
+    (tmp_path / "r.img").write_bytes(b"x" * 1024)
+    with RawLayer(tmp_path / "r.img", size=4096) as layer:
+        with pytest.raises(ImageFormatError, match="cut off"):
+            layer.pread(4096, 0)

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .chain import read_head, resolve_chain
+from .chain import LAYERS, open_layer, read_head, resolve_chain
+from .errors import ConvertError
 from .partitions import analyze
 from .probe import ImageInfo, probe
 from .qemu import QemuImg, source_spec
@@ -25,6 +26,13 @@ def inspect_image(path: str | Path, qemu: QemuImg | None = None,
     if info.format is None:
         return info
     resolve_chain(info, parents, force, candidates)
+    for image in [info] + info.chain:
+        if image.format in LAYERS and image.ok:
+            try:
+                open_layer(image).close()
+            except ConvertError as exc:
+                if str(exc) not in info.errors:
+                    info.errors.append(str(exc))
     head = read_head(info, HEAD_BYTES)
     if head is None and qemu is not None and info.ok and not info.needs_chain_reader:
         try:

@@ -195,6 +195,9 @@ class VhdLayer(Layer):
                 if sys.byteorder == "little":
                     bat.byteswap()
                 self.bat = bat
+                used = [e for e in bat if e != UNUSED]
+                if used:
+                    self.check_extent(max(used) * 512, h.bitmap_size + h.block_size)
                 if self.differencing:
                     self.parent_identity = h.parent_id
                     hints = [path for _code, path in h.locators]

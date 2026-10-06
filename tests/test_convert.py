@@ -383,3 +383,87 @@ def test_repair_applies_the_log(qemu, tmp_path):
     assert after.ok and not after.dirty
     _, outcome = run(qemu, tmp_path / "dirty.vhdx", parse_target("vdi"))
     assert as_raw(qemu, outcome.output, "vdi")[:SECTOR] == b"d" * SECTOR
+
+
+def leftovers(folder: Path) -> list[str]:
+    return [p.name for p in folder.iterdir() if p.name.endswith(".part")]
+
+
+def test_nothing_is_left_behind(qemu, vhdx_source):
+    source, _ = vhdx_source
+    run(qemu, source, Target(F.VDI), out=source.with_name("ok.vdi"))
+    plan = make_plan(Job(source=source, target=Target(F.VDI), output=source.with_name("c.vdi")), qemu)
+    with pytest.raises(OperationCancelled):
+        execute(plan, qemu, cancel=lambda: True)
+    assert leftovers(source.parent) == []
+
+
+def test_name_taken_while_converting_keeps_the_copy(qemu, vhdx_source):
+    source, expected = vhdx_source
+    out = source.with_name("race.vdi")
+    plan = make_plan(Job(source=source, target=Target(F.VDI), output=out), qemu)
+
+    def someone_else(stage, done, total):
+        if stage == "Verifying" and done == total and not out.exists():
+            out.write_bytes(b"theirs")
+
+    with pytest.raises(ConvertError, match="was not replaced") as err:
+        execute(plan, qemu, progress=someone_else)
+    assert out.read_bytes() == b"theirs"
+    kept = Path(str(err.value).rsplit("is in ", 1)[1].rstrip("."))
+    assert kept.is_file() and as_raw(qemu, kept, "vdi") == expected
+
+
+def test_vmdk_names_its_final_file(qemu, vhdx_source):
+    source, _ = vhdx_source
+    _, outcome = run(qemu, source, Target(F.VMDK), out=source.with_name("final name.vmdk"))
+    head = outcome.output.read_bytes()[:64 * 1024]
+    assert b'"final name.vmdk"' in head and b".part" not in head
+
+
+def test_4k_sector_vhdx(qemu, tmp_path):
+    size = 8 * MIB
+    content = {s: bytes([s % 251]) * 4096 for s in range(0, size // 4096, 5)}
+    write_vhdx(tmp_path / "4k.vhdx", size, content, logical=4096, block_size=MIB)
+    plan, outcome = run(qemu, tmp_path / "4k.vhdx", Target(F.VDI))
+    assert plan.uses_reader and any("4 KB sectors" in w for w in plan.warnings)
+    expected = bytearray(size)
+    for s, d in content.items():
+        expected[s * 4096:(s + 1) * 4096] = d
+    assert as_raw(qemu, outcome.output, "vdi") == bytes(expected)
+    plan = make_plan(Job(source=tmp_path / "4k.vhdx", target=Target(F.VHDX), output=tmp_path / "o.vhdx"), qemu)
+    assert not plan.ok and any("512-byte sectors" in e for e in plan.errors)
+
+
+def test_old_qemu_cannot_grow_without_the_reader(qemu, tmp_path, monkeypatch):
+    q = tmp_path / "d.qcow2"
+    qemu.check_run(["create", "-q", "-f", "qcow2", str(q), str(MIB + 512)], "test")
+    monkeypatch.setattr(qemu, "version", (4, 2, 1))
+    plan = make_plan(Job(source=q, target=parse_target("azure"), output=tmp_path / "a.vhd"), qemu)
+    assert not plan.ok and any("5.0" in e for e in plan.errors)
+
+
+def test_replacing_is_announced(qemu, vhdx_source):
+    source, _ = vhdx_source
+    out = source.with_name("there.vdi")
+    out.write_bytes(b"old")
+    plan = make_plan(Job(source=source, target=Target(F.VDI), output=out, overwrite=True), qemu)
+    assert plan.ok and any("will be replaced" in w for w in plan.warnings)
+
+
+def test_nbd_socket_folder_is_short(monkeypatch, tmp_path):
+    from virtconvert.core import nbd
+    long_dir = tmp_path / ("x" * 90)
+    long_dir.mkdir()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(long_dir))
+    monkeypatch.setattr(nbd.tempfile, "gettempdir", lambda: str(long_dir))
+    assert len(nbd._socket_parent()) < 70
+
+    class Source:
+        size = 4096
+
+        def read(self, offset, length):
+            return bytes(length)
+
+    with NbdServer(Source()) as server:
+        assert len(server.socket_path) < 108

@@ -51,6 +51,14 @@ class Source(Protocol):
     def read(self, offset: int, length: int) -> bytes: ...
 
 
+def _socket_parent() -> str:
+    """A folder short enough for a Unix socket path (at most 107 bytes on Linux)."""
+    for candidate in (os.environ.get("XDG_RUNTIME_DIR"), tempfile.gettempdir(), "/tmp", "/dev/shm"):
+        if candidate and len(candidate) < 70 and os.path.isdir(candidate) and os.access(candidate, os.W_OK):
+            return candidate
+    return tempfile.gettempdir()
+
+
 def _recv(sock: socket.socket, n: int) -> bytes:
     data = bytearray()
     while len(data) < n:
@@ -68,7 +76,7 @@ class NbdServer:
         self.source = source
         self.export = export
         self.error: BaseException | None = None
-        self._dir = tempfile.mkdtemp(prefix="virtconvert-")
+        self._dir = tempfile.mkdtemp(prefix="vc-", dir=_socket_parent())
         self.socket_path = os.path.join(self._dir, "nbd.sock")
         self._sock: socket.socket | None = None
         self._threads: list[threading.Thread] = []
@@ -81,9 +89,14 @@ class NbdServer:
 
     def start(self) -> "NbdServer":
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.bind(self.socket_path)
-        os.chmod(self.socket_path, 0o600)
-        sock.listen(4)
+        try:
+            sock.bind(self.socket_path)
+            os.chmod(self.socket_path, 0o600)
+            sock.listen(4)
+        except OSError:
+            sock.close()
+            shutil.rmtree(self._dir, ignore_errors=True)
+            raise
         self._sock = sock
         t = threading.Thread(target=self._accept_loop, name="nbd-accept", daemon=True)
         t.start()

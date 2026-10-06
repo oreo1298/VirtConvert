@@ -800,7 +800,7 @@ class MainWindow(QMainWindow):
         elif item.output.suffix.lower() not in item.target.format.extensions:
             item.output = item.output.with_suffix(item.target.format.extension)
         job = Job(source=item.source, target=item.target, output=item.output,
-                  overwrite=self.overwrite_chk.isChecked(), parents=dict(item.parents),
+                  overwrite=self.overwrite_chk.isChecked() or item.overwrite, parents=dict(item.parents),
                   force_parent=item.force_parent)
         item.plan = make_plan(job, self.qemu, item.info)
         item.target = job.target
@@ -1005,6 +1005,7 @@ class MainWindow(QMainWindow):
         if path != item.output:
             item.output = path
             item.output_custom = True
+            item.overwrite = False
             self._replan(item)
             self._show_target(item)
 
@@ -1023,9 +1024,8 @@ class MainWindow(QMainWindow):
             out = out.with_suffix(fmt.extension)
         item.output = out
         item.output_custom = True
-        if out.exists():
-            # the save dialog already asked whether to replace it
-            self.overwrite_chk.setChecked(True)
+        # the save dialog already asked whether to replace an existing file: for this item only
+        item.overwrite = out.exists()
         self._replan(item)
         self._show_target(item)
         self._update_actions()
@@ -1214,6 +1214,7 @@ class MainWindow(QMainWindow):
             return
         if self.runner.busy:
             return
+        self._output_typed()   # a name typed into "Save as" without pressing Enter
         candidates = [i for i in self.model.items if i.state in STARTABLE and i.plan and i.plan.ok]
         warned = [i for i in candidates if i.plan.warnings]
         if warned:
@@ -1249,7 +1250,8 @@ class MainWindow(QMainWindow):
     def _run_item(self, item: Item) -> None:
         qemu = self.qemu
         job = Job(source=item.source, target=item.target, output=item.output,
-                  verify=self.verify_chk.isChecked(), overwrite=self.overwrite_chk.isChecked(),
+                  verify=self.verify_chk.isChecked(),
+                  overwrite=self.overwrite_chk.isChecked() or item.overwrite,
                   parents=dict(item.parents), force_parent=item.force_parent)
         log = self.logLine.emit
 

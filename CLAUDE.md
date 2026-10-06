@@ -28,7 +28,11 @@ covers the other distributions. Design notes: docs/HOW-IT-WORKS.md.
 - qemu-img silently ignores the parent of a differencing VHD and refuses differencing VHDX/VDI:
   `ImageInfo.needs_chain_reader` → `ChainReader` + `NbdServer`. Parents are accepted only with a matching ID
   (VHD unique id, VHDX DataWriteGuid via parent_linkage/parent_linkage2, VDI uuid); IDs are GUIDs (bytes_le).
-- Outputs are written as `<name>.part`, verified, then renamed; every failure path deletes `.part`.
+- Outputs are written into a per-run work folder `<name>.<random>.part/<name>`, verified, then published with
+  `os.link` (no clobber) or `os.replace` (overwrite allowed); every failure path deletes the folder, except a
+  name taken during the run (the checked copy is kept and reported).
+- Readers check block tables against the file size and `Layer.pread` raises on short reads: never read a cut-off
+  file as zeros. VHDX with 4 KB logical sectors always goes through the reader (qemu's driver is 512-only).
 - VHDX outputs get `vhdx.mark_regions_required()` (qemu leaves the flag clear; VirtualBox then refuses them).
 - Growing a target (Azure → whole MiB, stream VMDK → 64 KiB grains): through the NBD reader when we can read
   the source, else `qemu-img create` + `convert -n --target-is-zero`.

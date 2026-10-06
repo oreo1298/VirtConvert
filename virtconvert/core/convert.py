@@ -9,6 +9,7 @@ name. Sources are only ever read.
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -107,7 +108,7 @@ def default_target(info: ImageInfo | None) -> Target:
 def unique_path(path: Path, taken: set[Path] | frozenset = frozenset()) -> Path:
     """PATH, or PATH with -2, -3… added if a file (or another planned output) has the name."""
     def free(p: Path) -> bool:
-        return not p.exists() and not Path(str(p) + ".part").exists() and p not in taken
+        return not p.exists() and p not in taken
 
     if free(path):
         return path
@@ -173,9 +174,15 @@ class Plan:
 
     @property
     def uses_reader(self) -> bool:
-        """VirtConvert reads the source itself (a chain, or zeros added at the end)."""
+        """VirtConvert reads the source itself: a chain, zeros added at the end, or a VHDX
+        with 4 KB sectors (qemu-img's VHDX driver only handles 512-byte sectors)."""
         info = self.info
-        return info.needs_chain_reader or (self.size != info.virtual_size and info.format in LAYERS)
+        return (info.needs_chain_reader or info.logical_sector != 512
+                or (self.size != info.virtual_size and info.format in LAYERS))
+
+    @property
+    def grows_without_reader(self) -> bool:
+        return self.size != self.info.virtual_size and not self.uses_reader
 
 
 def make_plan(job: Job, qemu: QemuImg | None, info: ImageInfo | None = None) -> Plan:
@@ -211,6 +218,9 @@ def make_plan(job: Job, qemu: QemuImg | None, info: ImageInfo | None = None) -> 
     else:
         if qemu.too_old:
             plan.errors.append(f"qemu-img {qemu.version_text} is too old; version 2.10 or newer is needed.")
+        elif plan.grows_without_reader and qemu.version[:2] < (5, 0):
+            plan.errors.append(f"Making this disk larger needs qemu-img 5.0 or newer (this one is "
+                               f"{qemu.version_text}). Convert it to VDI or VHDX first, then to {target.label}.")
         needed_drivers = [fmt.driver]
         if plan.uses_reader:
             needed_drivers.append("nbd")
@@ -233,6 +243,8 @@ def make_plan(job: Job, qemu: QemuImg | None, info: ImageInfo | None = None) -> 
         plan.errors.append("The output would overwrite the source. Choose another name.")
     elif out.exists() and not job.overwrite:
         plan.errors.append(f"{out.name} already exists. Choose another name or allow replacing files.")
+    elif out.is_file() and job.overwrite:
+        plan.warnings.append(f"{out.name} already exists and will be replaced.")
     elif out.exists() and out.is_dir():
         plan.errors.append(f"{out} is a folder.")
     if not out.parent.is_dir():
@@ -268,9 +280,15 @@ def _compatibility_notes(plan: Plan) -> None:
         count = len(info.chain) + 1
         plan.notes.append(f"A checkpoint of {info.chain[-1].name}: the {count} files are merged into "
                           "one complete disk (none of them is changed).")
-    if info.logical_sector == 4096 and fmt is not F.VHDX:
-        plan.warnings.append("This disk uses 4 KB sectors. Other formats show 512-byte sectors, so the "
-                             "guest won't find its partitions; keep it as VHDX for Hyper-V.")
+    if info.logical_sector != 512:
+        if fmt is F.VHDX:
+            plan.errors.append("This disk uses 4 KB sectors, and qemu-img can only write VHDX files with "
+                               "512-byte sectors: the guest wouldn't find its partitions in the copy. "
+                               "Keep using the original file in Hyper-V.")
+        else:
+            plan.warnings.append("This disk uses 4 KB sectors. The converted disk has 512-byte sectors (the "
+                                 "only kind VirtualBox and qemu-img offer), so a guest with partitions on it "
+                                 "won't find them. Disks without a partition table are fine.")
     firmware = info.partitions.firmware if info.partitions else ""
     if fmt in (F.VDI, F.VMDK) and firmware == "uefi":
         plan.notes.append("The disk boots with UEFI: in VirtualBox turn on Settings → System → "
@@ -307,7 +325,11 @@ def execute(plan: Plan, qemu: QemuImg, progress: ProgressFn | None = None,
     log = log or (lambda _m: None)
     started = time.monotonic()
     out = job.output
-    part = out.with_name(out.name + ".part")
+    # Each run writes into its own folder next to the output, under the final file name
+    # (a VMDK names its own file inside), and moves the file out when it is checked.
+    work = out.parent / f"{out.name}.{secrets.token_hex(4)}.part"
+    part = work / out.name
+    keep_part = False
     watched = [info.path] + [p.path for p in info.chain] + info.extent_files
     signatures = {p: file_signature(p) for p in watched}
 
@@ -329,8 +351,7 @@ def execute(plan: Plan, qemu: QemuImg, progress: ProgressFn | None = None,
             grow = False
         else:
             source = source_spec(info.path, info.format.driver)
-        if part.exists():
-            part.unlink()
+        work.mkdir()
         options = target.qemu_options()
         progress("Converting", 0, plan.size)
         log(f"qemu-img: {info.label} → {target.label}, {human_bytes(plan.size)}")
@@ -367,23 +388,43 @@ def execute(plan: Plan, qemu: QemuImg, progress: ProgressFn | None = None,
             _check_unchanged(signatures)
             verified = True
             progress("Verifying", plan.size, plan.size)
-        if out.exists() and not job.overwrite:
-            raise ConvertError(f"{out.name} appeared while converting; the copy was kept as {part.name}.")
-        os.replace(part, out)
+        try:
+            _publish(part, out, job.overwrite)
+        except FileExistsError:
+            keep_part = True
+            raise ConvertError(f"{out.name} appeared while converting, so it was not replaced. The "
+                               f"converted copy is in {part}.") from None
+        shutil.rmtree(work, ignore_errors=True)
         return Outcome(output=out, size=plan.size, file_size=out.stat().st_size,
                        seconds=time.monotonic() - started, verified=verified)
     except BaseException:
-        try:
-            if part.exists():
-                part.unlink()
-        except OSError:
-            pass
+        if not keep_part:
+            shutil.rmtree(work, ignore_errors=True)
         raise
     finally:
         if server is not None:
             server.stop()
         if reader is not None:
             reader.close()
+
+
+def _publish(part: Path, out: Path, overwrite: bool) -> None:
+    """Give the checked copy its real name. Without OVERWRITE an existing file is never
+    replaced, not even one that appeared a moment ago (FileExistsError)."""
+    if overwrite:
+        os.replace(part, out)
+        return
+    try:
+        os.link(part, out)      # atomic, and fails if OUT exists
+    except FileExistsError:
+        raise
+    except OSError:
+        # no hard links on this filesystem (FAT, exFAT, some network shares)
+        if out.exists():
+            raise FileExistsError(out) from None
+        os.replace(part, out)
+    else:
+        part.unlink()
 
 
 def _fsync(path: Path) -> None:

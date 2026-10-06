@@ -104,6 +104,10 @@ class VdiLayer(Layer):
             if sys.byteorder == "big":
                 bmap.byteswap()
             self.bmap = bmap
+            used = [e for e in bmap if e < BLOCK_ZERO]
+            if used:
+                self.check_extent(h.off_data + max(used) * (h.block_size + h.block_extra),
+                                  h.block_size + h.block_extra)
         except Exception:
             self.close()
             raise

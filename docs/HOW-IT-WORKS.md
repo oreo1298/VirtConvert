@@ -66,6 +66,14 @@ VirtConvert implements the block maps of the three formats itself (read-only):
   *fully present*, *partially present* (look at the sector bitmap, least significant bit first),
   *zero*, or not present/undefined/unmapped (the parent's data in a differencing disk, zeros
   otherwise). Checksums are CRC-32C.
+Before reading, every block table entry is checked against the file size, like qemu-img does: a
+file cut short by an interrupted copy is refused instead of being read as zeros (a copy made from
+zeros would still "verify").
+
+VHDX files with 4 KB logical sectors are always read this way, because qemu-img's VHDX driver
+only handles 512-byte sectors. The copy gets 512-byte sectors (VDI, VMDK and VHD have no other
+kind), which the app warns about: partitions laid out in 4 KB sectors aren't found there.
+
 - **VDI**: a block map of 32-bit entries; `0xFFFFFFFF` means "not allocated" (the parent's data in
   a snapshot) and `0xFFFFFFFE` means "zeros".
 
@@ -106,8 +114,8 @@ sparse targets. The same server pads a disk with zeros when the target has to be
 readable, its parents are found, qemu-img is new enough and has the needed drivers, the target
 format can hold the disk (VHD: 2040 GB, VHDX: 64 TB), the output is not the source or one of its
 parents, it doesn't exist (unless replacing is allowed), the folder is writable, and the free
-space is probably enough. It also collects notes for the user (UEFI → *Enable EFI*; 4 KB sectors
-won't work outside VHDX; stream-optimized VMDK is for OVA/ESXi; a checkpoint is being merged).
+space is probably enough. It also collects notes for the user (UEFI → *Enable EFI*; 4 KB sectors;
+stream-optimized VMDK is for OVA/ESXi; a checkpoint is being merged; a file will be replaced).
 
 Targets and the qemu-img options used:
 
@@ -124,8 +132,10 @@ grain that VirtualBox can't read.
 
 ## 4. Converting and checking
 
-`execute` writes `<output>.part`, using `qemu-img convert -p` and turning its progress output
-into progress for the app and the command line (cancelling stops the process group). Then:
+`execute` makes a work folder next to the output (`<output>.<random>.part/`) and writes the copy
+inside it under its final name (a VMDK names its own file in its descriptor), using
+`qemu-img convert -p` and turning its progress output into progress for the app and the command
+line (cancelling stops the process group). Two runs never share a work folder. Then:
 
 1. **VHDX fix-up**: qemu-img leaves the *required* flag of the BAT and metadata regions clear,
    which [MS-VHDX] asks to be set; VirtualBox refuses such files. VirtConvert sets the flags and
@@ -135,7 +145,9 @@ into progress for the app and the command line (cancelling stops the process gro
    was probably running.
 4. **Verify**: `qemu-img compare` reads both disks and compares what the guest would see. A size
    difference is fine when the extra part is zeros (Azure rounding, VMDK grains).
-5. Only then is `.part` renamed to the real name. Any failure or cancel removes `.part`.
+5. Only then does the file get its real name: with a hard link, which fails if a file of that
+   name appeared in the meantime (it is never replaced unless the user allowed it; the checked
+   copy is then kept and its location reported). Any failure or cancel removes the work folder.
 
 The source files are only ever opened read-only. The one exception is **Repair**, which the user
 starts explicitly for a VHDX whose log still holds changes: it runs `qemu-img check -r all`,
