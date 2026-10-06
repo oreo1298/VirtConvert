@@ -289,7 +289,7 @@ class VhdxLayer(Layer):
                 raise UnsupportedImageError(
                     f"{self.path.name} was not closed cleanly (its log still has changes to apply). "
                     "Start and shut down the virtual machine once in Hyper-V, or repair the file "
-                    "with VertConvert&Create, then try again.")
+                    "with VirtConvert&Create, then try again.")
             self.size = info.virtual_size
             self.differencing = info.has_parent
             self.identity = "{" + str(info.header.data_write_guid).upper() + "}"
@@ -384,7 +384,7 @@ def mark_regions_required(path) -> bool:
     """Set the "required" flag on the BAT and metadata regions, as [MS-VHDX] asks.
 
     qemu-img leaves the flag clear. Hyper-V doesn't mind, but VirtualBox refuses
-    such files, so VertConvert&Create fixes the VHDX files it writes. Returns True if
+    such files, so VirtConvert&Create fixes the VHDX files it writes. Returns True if
     anything changed.
     """
     changed = False

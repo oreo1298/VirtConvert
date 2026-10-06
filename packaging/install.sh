@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Install (or update) VertConvert&Create on any Linux distribution.
+# Install (or update) VirtConvert&Create on any Linux distribution.
 #
-#   ./packaging/install.sh            system-wide into /opt/vertconvert, with the menu entry and
-#                                     the `vertconvert` command in /usr/local/bin. Recommended.
-#   ./packaging/install.sh --user     just for you, in ~/.local (no sudo for VertConvert&Create itself)
+#   ./packaging/install.sh            system-wide into /opt/virtconvert, with the menu entry and
+#                                     the `virtconvert` command in /usr/local/bin. Recommended.
+#   ./packaging/install.sh --user     just for you, in ~/.local (no sudo for VirtConvert&Create itself)
 #
 # Options:
 #   --deps / --no-deps   install qemu-img, Python, Qt and the mkfs tools with your package manager
@@ -35,7 +35,7 @@ while [ $# -gt 0 ]; do
 done
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_ID="io.github.oreo1298.VertConvertCreate"
+APP_ID="io.github.oreo1298.VirtConvert"
 
 say() { printf '\033[1;34m>>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*"; }
@@ -53,17 +53,17 @@ if [ "$MODE" = system ]; then
     say "The system-wide install needs root; running it with sudo"
     exec sudo -E bash "$0" "${ORIG_ARGS[@]}"
   fi
-  PREFIX=/opt/vertconvert
+  PREFIX=/opt/virtconvert
   BIN=/usr/local/bin
   SHARE=/usr/local/share
 else
   [ "$(id -u)" = 0 ] && die "--user installs for a normal user; run it without sudo"
-  PREFIX="$HOME/.local/lib/vertconvert"
+  PREFIX="$HOME/.local/lib/virtconvert"
   BIN="$HOME/.local/bin"
   SHARE="${XDG_DATA_HOME:-$HOME/.local/share}"
 fi
 VENV="$PREFIX/venv"
-OLD_ID="io.github.oreo1298.VirtConvert"    # VirtConvert, the name before 1.1
+OLD_ID="io.github.oreo1298.VertConvertCreate"    # the 1.1 build briefly misspelt VertConvert&Create
 # root's pip must not write into the caller's ~/.cache (sudo -E keeps HOME)
 [ "$MODE" = system ] && export PIP_NO_CACHE_DIR=1
 ROOT=""
@@ -149,7 +149,7 @@ qemu_img_found() {
 if [ "$DEPS" = yes ] || { [ "$DEPS" = ask ] && ! qemu_img_found && ask "Install qemu-img and the other dependencies with $PM?"; }; then
   install_deps || warn "Installing dependencies failed; continuing"
 elif ! qemu_img_found; then
-  warn "qemu-img is missing: VertConvert&Create needs it to write the converted disks. Run with --deps to install it."
+  warn "qemu-img is missing: VirtConvert&Create needs it to write the converted disks. Run with --deps to install it."
 fi
 
 # ---------------------------------------------------------------------- Python 3.10+
@@ -174,7 +174,7 @@ fi
 say "Using $("$PY" --version 2>&1) ($PY)"
 
 # ---------------------------------------------------------------------- the app
-say "Installing VertConvert&Create into $PREFIX"
+say "Installing VirtConvert&Create into $PREFIX"
 mkdir -p "$PREFIX"
 if [ ! -x "$VENV/bin/python" ]; then
   "$PY" -m venv --system-site-packages "$VENV" || die "Could not create a virtualenv (Debian/Ubuntu: apt install python3-venv)"
@@ -186,7 +186,7 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 tar -C "$HERE" --exclude=./.git --exclude=./build --exclude=./dist --exclude='*.egg-info' \
     --exclude='__pycache__' --exclude=./.venv --exclude=./src --exclude=./pkg -cf - . | tar -C "$BUILD_DIR" -xf -
 "$VENV/bin/python" -m pip install --quiet --upgrade --force-reinstall --no-deps "$BUILD_DIR" >/dev/null \
-  || die "Installing VertConvert&Create into $VENV failed"
+  || die "Installing VirtConvert&Create into $VENV failed"
 if "$VENV/bin/python" -c "import PySide6.QtWidgets, PySide6.QtSvg" 2>/dev/null; then
   say "PySide6 (Qt) is there"
 else
@@ -195,22 +195,22 @@ else
     || warn "Installing PySide6 failed: the command line works, the app doesn't (see the README)"
 fi
 
-# VertConvert&Create replaces VirtConvert (its name before 1.1)
-OLD_PREFIX="$(dirname "$PREFIX")/virtconvert"
+# the 1.1 build that was briefly called VertConvert&Create (command vertconvert) goes away
+OLD_PREFIX="$(dirname "$PREFIX")/vertconvert"
 if [ -d "$OLD_PREFIX" ]; then
-  say "Replacing VirtConvert (the old name of VertConvert&Create)"
+  say "Removing VertConvert&Create (a misspelt name of this version)"
   rm -rf "$OLD_PREFIX"
-  rm -f "$BIN/virtconvert" "$SHARE/applications/$OLD_ID.desktop" "$SHARE/metainfo/$OLD_ID.metainfo.xml" \
+  rm -f "$BIN/vertconvert" "$SHARE/applications/$OLD_ID.desktop" "$SHARE/metainfo/$OLD_ID.metainfo.xml" \
         "$SHARE/icons/hicolor/scalable/apps/$OLD_ID.svg"
 fi
 
 mkdir -p "$BIN"
-ln -sf "$VENV/bin/vertconvert" "$BIN/vertconvert"
+ln -sf "$VENV/bin/virtconvert" "$BIN/virtconvert"
 
 say "Menu entry and icon"
-install -Dm644 "$HERE/vertconvert/data/vertconvert.svg" "$SHARE/icons/hicolor/scalable/apps/$APP_ID.svg"
+install -Dm644 "$HERE/virtconvert/data/virtconvert.svg" "$SHARE/icons/hicolor/scalable/apps/$APP_ID.svg"
 mkdir -p "$SHARE/applications"
-sed "s#^Exec=vertconvert#Exec=$BIN/vertconvert#" "$HERE/data/$APP_ID.desktop" > "$SHARE/applications/$APP_ID.desktop"
+sed "s#^Exec=virtconvert#Exec=$BIN/virtconvert#" "$HERE/data/$APP_ID.desktop" > "$SHARE/applications/$APP_ID.desktop"
 install -Dm644 "$HERE/data/$APP_ID.metainfo.xml" "$SHARE/metainfo/$APP_ID.metainfo.xml"
 command -v update-desktop-database >/dev/null && update-desktop-database -q "$SHARE/applications" 2>/dev/null || true
 command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$SHARE/icons/hicolor" 2>/dev/null || true
@@ -218,7 +218,7 @@ command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$SHA
 {
   echo "mode=$MODE"
   echo "source=$HERE"
-  echo "version=$("$VENV/bin/python" -c 'import vertconvert; print(vertconvert.__version__)')"
+  echo "version=$("$VENV/bin/python" -c 'import virtconvert; print(virtconvert.__version__)')"
 } > "$PREFIX/.install-info"
 
 if [ "$MODE" = user ]; then
@@ -229,6 +229,6 @@ if [ "$MODE" = user ]; then
 fi
 
 echo
-say "Done. Start VertConvert&Create from your application menu, or run: vertconvert"
-"$VENV/bin/vertconvert" doctor || true
+say "Done. Start VirtConvert&Create from your application menu, or run: virtconvert"
+"$VENV/bin/virtconvert" doctor || true
 exit 0

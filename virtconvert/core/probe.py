@@ -2,7 +2,7 @@
 
 qemu-img guesses formats from the first bytes of a file and so takes fixed VHD
 files for raw images, and it reads differencing VHD files as if they had no
-parent. VertConvert&Create therefore decides the format itself and always tells
+parent. VirtConvert&Create therefore decides the format itself and always tells
 qemu-img which one to use.
 """
 
@@ -85,7 +85,7 @@ class ImageInfo:
 
     @property
     def needs_chain_reader(self) -> bool:
-        """Differencing VHD/VHDX/VDI: VertConvert&Create merges the chain itself."""
+        """Differencing VHD/VHDX/VDI: VirtConvert&Create merges the chain itself."""
         return self.differencing and self.format in (F.VHD, F.VHDX, F.VDI) and not self.member
 
     @property
@@ -214,7 +214,7 @@ def probe(path: str | os.PathLike, member: str | None = None) -> ImageInfo:
         fmt = detect(path if member is None else Path(member), head, size, read_padded)
         info.format = fmt
         if fmt is None:
-            info.errors.append(f"{info.name} is not a disk image VertConvert&Create recognises "
+            info.errors.append(f"{info.name} is not a disk image VirtConvert&Create recognises "
                                "(VDI, VMDK, VHD, VHDX, QCOW2, QED, OVA, Parallels, DMG, ISO or a raw .img).")
             return info
         if member is not None and fmt in (F.OVA, F.OVF):

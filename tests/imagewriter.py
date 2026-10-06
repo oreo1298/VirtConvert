@@ -1,6 +1,6 @@
 """Write small VHD, VHDX, VDI and DMG test images, including differencing ones.
 
-Independent of the readers in vertconvert.core: written from the format
+Independent of the readers in virtconvert.core: written from the format
 specifications, so the tests check the readers against the specs (and against
 VirtualBox and libvhdi where those are installed).
 
@@ -248,7 +248,7 @@ def write_vhdx(path: Path, size: int, content: dict[int, bytes], kind: str = "dy
                block_size: int = 2 * MIB, logical: int = SECTOR, parent: Path | None = None,
                parent_data_guid: uuid.UUID | None = None, zero_blocks: tuple[int, ...] = (),
                dirty: bool = False, stale_log: bool = False, required_flags: bool = True,
-               creator: str = "VertConvert&Create test writer") -> uuid.UUID:
+               creator: str = "VirtConvert&Create test writer") -> uuid.UUID:
     """Returns the DataWriteGuid (what a child's parent_linkage refers to).
 
     CONTENT is keyed by logical sector, each value LOGICAL bytes."""

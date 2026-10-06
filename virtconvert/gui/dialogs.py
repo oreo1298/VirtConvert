@@ -70,9 +70,8 @@ class AboutDialog(QDialog):
             "VirtualBox snapshots are merged with their parents, and every copy can be compared with its "
             "source before it is saved.<br><br>"
             "The disks are written by <b>qemu-img</b> from the QEMU project and formatted by your "
-            "distribution's mkfs programs. VertConvert&amp;Create reads the image headers, finds parents, "
-            "merges differencing images and lays out new disks itself. It was called VirtConvert before "
-            "version 1.1.<br><br>"
+            "distribution's mkfs programs. VirtConvert&amp;Create reads the image headers, finds parents, "
+            "merges differencing images and lays out new disks itself.<br><br>"
             "Released under the MIT license. Not affiliated with Microsoft, Oracle or Broadcom/VMware.")
         body.setWordWrap(True)
         body.setTextFormat(Qt.RichText)
@@ -104,7 +103,7 @@ class QemuMissingDialog(QDialog):
         title.setFont(scaled_font(title, 1.25, bold=True))
         lay.addWidget(title)
         text = QLabel(
-            "VertConvert&Create uses qemu-img from the QEMU project to write the converted disks. "
+            "VirtConvert&Create uses qemu-img from the QEMU project to write the converted disks. "
             f"It is a small package on {system.distro_name()}. Install it with:")
         text.setWordWrap(True)
         lay.addWidget(text)
@@ -117,7 +116,7 @@ class QemuMissingDialog(QDialog):
         row.addWidget(self.command, 1)
         row.addWidget(copy)
         lay.addLayout(row)
-        hint = QLabel("Or let VertConvert&Create run it for you (it asks for your password).")
+        hint = QLabel("Or let VirtConvert&Create run it for you (it asks for your password).")
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
         lay.addWidget(hint)

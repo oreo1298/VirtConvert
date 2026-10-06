@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 from imagewriter import MIB, SECTOR, flatten, write_vdi, write_vhd, write_vhdx
 
-from vertconvert.core import formats as F
-from vertconvert.core import vhdx as V
-from vertconvert.core.convert import (
+from virtconvert.core import formats as F
+from virtconvert.core import vhdx as V
+from virtconvert.core.convert import (
     Job,
     Target,
     default_output,
@@ -22,11 +22,11 @@ from vertconvert.core.convert import (
     unique_path,
     verify_images,
 )
-from vertconvert.core.errors import ConvertError, OperationCancelled, VerifyError
-from vertconvert.core.images import inspect_image
-from vertconvert.core.nbd import NbdServer
-from vertconvert.core.probe import probe
-from vertconvert.core.qemu import nbd_spec, source_spec
+from virtconvert.core.errors import ConvertError, OperationCancelled, VerifyError
+from virtconvert.core.images import inspect_image
+from virtconvert.core.nbd import NbdServer
+from virtconvert.core.probe import probe
+from virtconvert.core.qemu import nbd_spec, source_spec
 
 
 def as_raw(qemu, path: Path, driver: str) -> bytes:
@@ -180,7 +180,7 @@ def test_chain_is_merged(qemu, tmp_path, fmt):
 
 
 def test_qemu_alone_would_get_a_differencing_vhd_wrong(qemu, tmp_path):
-    """Why VertConvert&Create merges chains itself: qemu-img ignores a VHD's parent without an error."""
+    """Why VirtConvert&Create merges chains itself: qemu-img ignores a VHD's parent without an error."""
     size = 4 * MIB
     b = write_vhd(tmp_path / "base.vhd", size, {0: b"p" * SECTOR})
     write_vhd(tmp_path / "child.vhd", size, {1: b"c" * SECTOR}, "differencing", parent=tmp_path / "base.vhd",
@@ -226,7 +226,7 @@ def test_stream_vmdk_is_padded_to_grains(qemu, tmp_path):
 
 
 def test_fixed_vhd_grows_without_the_reader(qemu, tmp_path):
-    """Sources VertConvert&Create can't read itself (QCOW2) grow by creating the target first."""
+    """Sources VirtConvert&Create can't read itself (QCOW2) grow by creating the target first."""
     q = tmp_path / "d.qcow2"
     qemu.check_run(["create", "-q", "-f", "qcow2", str(q), str(MIB + 512)], "test")
     plan, outcome = run(qemu, q, parse_target("azure"))
@@ -400,9 +400,9 @@ def test_nbd_read_errors_reach_qemu(qemu, tmp_path):
 
 
 def test_cli_entry_point_runs(tmp_path):
-    out = subprocess.run(["python3", "-m", "vertconvert", "--version"], capture_output=True, text=True,
+    out = subprocess.run(["python3", "-m", "virtconvert", "--version"], capture_output=True, text=True,
                          cwd=Path(__file__).resolve().parent.parent)
-    assert out.returncode == 0 and out.stdout.startswith("vertconvert ")
+    assert out.returncode == 0 and out.stdout.startswith("virtconvert ")
 
 
 def test_unique_ids(qemu, vhdx_source):
@@ -424,7 +424,7 @@ def test_stale_log_guid_is_not_dirty(qemu, tmp_path):
 
 
 def test_repair_applies_the_log(qemu, tmp_path):
-    from vertconvert.core.convert import repair
+    from virtconvert.core.convert import repair
     write_vhdx(tmp_path / "dirty.vhdx", 4 * MIB, {0: b"d" * SECTOR}, dirty=True)
     info = probe(tmp_path / "dirty.vhdx")
     assert info.dirty and not info.ok
@@ -504,7 +504,7 @@ def test_replacing_is_announced(qemu, vhdx_source):
 
 
 def test_nbd_socket_folder_is_short(monkeypatch, tmp_path):
-    from vertconvert.core import nbd
+    from virtconvert.core import nbd
     long_dir = tmp_path / ("x" * 90)
     long_dir.mkdir()
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(long_dir))

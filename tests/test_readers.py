@@ -8,12 +8,12 @@ import uuid
 import pytest
 from imagewriter import MIB, SECTOR, flatten, gpt_sectors, mbr_sector, to_sectors, write_vdi, write_vhd, write_vhdx
 
-from vertconvert.core import formats as F
-from vertconvert.core.chain import ChainReader, resolve_chain
-from vertconvert.core.images import inspect_image
-from vertconvert.core.partitions import analyze
-from vertconvert.core.probe import probe
-from vertconvert.core.vhdx import crc32c
+from virtconvert.core import formats as F
+from virtconvert.core.chain import ChainReader, resolve_chain
+from virtconvert.core.images import inspect_image
+from virtconvert.core.partitions import analyze
+from virtconvert.core.probe import probe
+from virtconvert.core.vhdx import crc32c
 
 
 def sectors(size, count, seed):
@@ -388,8 +388,8 @@ def test_cut_off_parent_is_refused(tmp_path):
 
 
 def test_short_reads_raise(tmp_path):
-    from vertconvert.core.errors import ImageFormatError
-    from vertconvert.core.layers import RawLayer
+    from virtconvert.core.errors import ImageFormatError
+    from virtconvert.core.layers import RawLayer
     (tmp_path / "r.img").write_bytes(b"x" * 1024)
     with RawLayer(tmp_path / "r.img", size=4096) as layer:
         with pytest.raises(ImageFormatError, match="cut off"):

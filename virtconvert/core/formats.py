@@ -1,4 +1,4 @@
-"""The disk image formats VertConvert&Create reads and writes."""
+"""The disk image formats VirtConvert&Create reads and writes."""
 
 from __future__ import annotations
 

@@ -3,7 +3,7 @@
 Hyper-V checkpoints (.avhd/.avhdx) and VirtualBox snapshots only store what
 changed since their parent. To convert one, its whole chain is read as a
 single disk: each part of the disk comes from the newest image that has it.
-qemu-img can't do this for VHD, VHDX and VDI, so VertConvert&Create does the reading
+qemu-img can't do this for VHD, VHDX and VDI, so VirtConvert&Create does the reading
 and hands qemu-img the merged disk (see nbd.py).
 """
 
@@ -34,7 +34,7 @@ def normalize_id(value: str | None) -> str:
 def open_layer(info: ImageInfo) -> Layer:
     cls = LAYERS.get(info.format)
     if cls is None:
-        raise ImageFormatError(f"{info.name}: VertConvert&Create can't read {info.label} images itself")
+        raise ImageFormatError(f"{info.name}: VirtConvert&Create can't read {info.label} images itself")
     return cls(info.path)
 
 
@@ -267,7 +267,7 @@ class ChainReader:
 
 
 def read_head(info: ImageInfo, length: int = 128 * 1024) -> bytes | None:
-    """The first bytes of the virtual disk, if VertConvert&Create can read the image itself."""
+    """The first bytes of the virtual disk, if VirtConvert&Create can read the image itself."""
     if info.format not in LAYERS or not info.ok or info.member:
         return None
     if info.differencing and (not info.chain or info.chain[-1].differencing):

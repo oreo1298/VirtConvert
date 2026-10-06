@@ -7,11 +7,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="vertconvert-tests-")
+os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="virtconvert-tests-")
 
 import pytest  # noqa: E402
 
-from vertconvert.core.qemu import QemuImg  # noqa: E402
+from virtconvert.core.qemu import QemuImg  # noqa: E402
 
 
 @pytest.fixture(scope="session")

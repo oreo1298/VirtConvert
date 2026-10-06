@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.oreo1298.VertConvertCreate</id>
+  <id>io.github.oreo1298.VirtConvert</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
-  <name>VertConvert&amp;Create</name>
+  <name>VirtConvert&amp;Create</name>
   <summary>Convert and create virtual disks</summary>
   <description>
     <p>
-      VertConvert&amp;Create (formerly VirtConvert) converts virtual disks between VirtualBox, Hyper-V,
+      VirtConvert&amp;Create converts virtual disks between VirtualBox, Hyper-V,
       VMware and QEMU/KVM, and creates new ones: empty, or with a formatted partition ready to use.
     </p>
     <ul>
@@ -20,7 +20,7 @@
       <li>Converts several images in one go; a command-line interface for scripts</li>
     </ul>
   </description>
-  <launchable type="desktop-id">io.github.oreo1298.VertConvertCreate.desktop</launchable>
+  <launchable type="desktop-id">io.github.oreo1298.VirtConvert.desktop</launchable>
   <url type="homepage">https://github.com/oreo1298/VirtConvert</url>
   <url type="bugtracker">https://github.com/oreo1298/VirtConvert/issues</url>
   <developer id="io.github.oreo1298">
@@ -41,13 +41,13 @@
     </screenshot>
   </screenshots>
   <provides>
-    <binary>vertconvert</binary>
+    <binary>virtconvert</binary>
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
     <release version="1.1.0" date="2026-10-06">
       <description>
-        <p>Renamed to VertConvert&amp;Create.</p>
+        <p>Renamed to VirtConvert&amp;Create.</p>
         <ul>
           <li>Create new disks: empty, partitioned, or formatted with NTFS, exFAT, FAT32, ext4, Btrfs or XFS</li>
           <li>New formats: QCOW2, QED, OVA and raw are written; Parallels, DMG, ISO, QCOW and OVF are read</li>

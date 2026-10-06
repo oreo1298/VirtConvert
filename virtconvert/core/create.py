@@ -207,7 +207,7 @@ def make_create_plan(disk: NewDisk, qemu: QemuImg | None) -> CreatePlan:
             plan.notes.append(f"{fs.label} labels are limited: the label will be “{plan.label}”.")
 
     if qemu is None:
-        plan.errors.append("qemu-img is not installed. Run 'vertconvert doctor' to see how to install it.")
+        plan.errors.append("qemu-img is not installed. Run 'virtconvert doctor' to see how to install it.")
     elif qemu.too_old:
         plan.errors.append(f"qemu-img {qemu.version_text} is too old; version 2.10 or newer is needed.")
     else:
@@ -386,7 +386,7 @@ def _merged(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
 
 def compare_with_reader(raw: Path, size: int):
     """A comparison of a new VHD, VHDX or VDI with the raw disk it was written from, using
-    VertConvert&Create's own readers: only the parts either of them stores are read."""
+    VirtConvert&Create's own readers: only the parts either of them stores are read."""
     def compare(written: Path, percent: Callable[[float], None], cancel: CancelFn) -> tuple[bool, str]:
         info = probe(written)
         if not info.ok:
@@ -466,7 +466,7 @@ def create_disk(plan: CreatePlan, qemu: QemuImg, progress: ProgressFn | None = N
             scratch.mkdir()
             if not _sparse_ok(scratch):
                 # a drive without sparse files (FAT, exFAT): build the disk in the temporary folder
-                other = Path(tempfile.mkdtemp(prefix="vertconvert-"))
+                other = Path(tempfile.mkdtemp(prefix="virtconvert-"))
                 if _sparse_ok(other):
                     scratch = elsewhere = other
                 else:

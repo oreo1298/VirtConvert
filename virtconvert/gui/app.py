@@ -16,7 +16,7 @@ from ..core.qemu import QemuImg
 from .main_window import MainWindow
 from .theme import theme
 
-ICON_PATH = Path(__file__).resolve().parent.parent / "data" / "vertconvert.svg"
+ICON_PATH = Path(__file__).resolve().parent.parent / "data" / "virtconvert.svg"
 
 
 def app_icon() -> QIcon:
@@ -27,7 +27,7 @@ def app_icon() -> QIcon:
 
 
 def take_over_old_settings() -> None:
-    """Keep the settings of VirtConvert (the name before 1.1) the first time."""
+    """Keep the settings of the 1.1 build that was briefly called VertConvert&Create."""
     config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
     old = config / OLD_APP_ID / f"{OLD_APP_ID}.conf"
     new = config / APP_ID / f"{APP_ID}.conf"
@@ -52,8 +52,7 @@ def run_gui(files: list[str] | None = None, argv: list[str] | None = None) -> in
 
     take_over_old_settings()
     settings = QSettings(APP_ID, APP_ID)
-    mode = (os.environ.get("VERTCONVERT_THEME") or os.environ.get("VIRTCONVERT_THEME")
-            or str(settings.value("theme", "system")))
+    mode = os.environ.get("VIRTCONVERT_THEME") or str(settings.value("theme", "system"))
     theme.apply(app, mode)
     hints = QGuiApplication.styleHints()
     if hasattr(hints, "colorSchemeChanged"):

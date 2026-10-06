@@ -1,6 +1,6 @@
 """A small read-only NBD server on a Unix socket.
 
-qemu-img can read from an NBD server like from a file. VertConvert&Create uses this
+qemu-img can read from an NBD server like from a file. VirtConvert&Create uses this
 to give qemu-img a merged view of a differencing chain (see chain.py): qemu-img
 reads the disk through this server and writes the target format itself, so no
 temporary copy of the disk is needed.
@@ -72,7 +72,7 @@ def _recv(sock: socket.socket, n: int) -> bytes:
 class NbdServer:
     """Serves SOURCE read-only. Use as a context manager; `url` is for qemu-img."""
 
-    def __init__(self, source: Source, export: str = "vertconvert"):
+    def __init__(self, source: Source, export: str = "virtconvert"):
         self.source = source
         self.export = export
         self.error: BaseException | None = None

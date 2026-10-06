@@ -10,12 +10,12 @@ from pathlib import Path
 import pytest
 from imagewriter import MIB, SECTOR, flatten, gpt_sectors, mbr_sector, to_sectors, write_dmg, write_vhd, write_vhdx
 
-from vertconvert.core import formats as F
-from vertconvert.core import ova
-from vertconvert.core.convert import Job, default_output, execute, make_plan, parse_target, verify_images
-from vertconvert.core.images import expand_sources, inspect_image
-from vertconvert.core.probe import probe
-from vertconvert.core.qemu import image_spec, source_spec
+from virtconvert.core import formats as F
+from virtconvert.core import ova
+from virtconvert.core.convert import Job, default_output, execute, make_plan, parse_target, verify_images
+from virtconvert.core.images import expand_sources, inspect_image
+from virtconvert.core.probe import probe
+from virtconvert.core.qemu import image_spec, source_spec
 
 EFI = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 WINDOWS_DATA = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7"

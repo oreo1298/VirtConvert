@@ -3,14 +3,14 @@ requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "vertconvert"
+name = "virtconvert"
 dynamic = ["version"]
 description = "Convert and create virtual disks for VirtualBox, Hyper-V, VMware and QEMU/KVM: VDI, VMDK, VHD, VHDX, QCOW2, OVA and more"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE", "NOTICE"]
-authors = [{ name = "VertConvert&Create contributors" }]
+authors = [{ name = "VirtConvert&Create contributors" }]
 keywords = ["vhd", "vhdx", "vdi", "vmdk", "virtualbox", "hyper-v", "disk image", "converter",
             "qemu-img", "avhdx", "checkpoint", "snapshot"]
 classifiers = [
@@ -34,7 +34,7 @@ test = ["pytest>=7"]
 dev = ["pytest>=7", "PySide6-Essentials>=6.5", "ruff"]
 
 [project.scripts]
-vertconvert = "vertconvert.cli:main"
+virtconvert = "virtconvert.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/oreo1298/VirtConvert"
@@ -42,13 +42,13 @@ Repository = "https://github.com/oreo1298/VirtConvert"
 Issues = "https://github.com/oreo1298/VirtConvert/issues"
 
 [tool.setuptools]
-packages = ["vertconvert", "vertconvert.core", "vertconvert.data", "vertconvert.gui"]
+packages = ["virtconvert", "virtconvert.core", "virtconvert.data", "virtconvert.gui"]
 
 [tool.setuptools.dynamic]
-version = { attr = "vertconvert.__version__" }
+version = { attr = "virtconvert.__version__" }
 
 [tool.setuptools.package-data]
-"vertconvert.data" = ["*.svg"]
+"virtconvert.data" = ["*.svg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

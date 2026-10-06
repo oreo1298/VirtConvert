@@ -1,4 +1,4 @@
-# Maintainer: VertConvert&Create contributors
+# Maintainer: VirtConvert&Create contributors
 #
 # Arch Linux and Arch-based distributions (CachyOS, EndeavourOS, Manjaro, Garuda, ...).
 # Builds the checkout this file sits in:
@@ -8,9 +8,9 @@
 #   makepkg -si
 #
 # Update:     git pull && makepkg -sif
-# Uninstall:  sudo pacman -Rns vertconvert
+# Uninstall:  sudo pacman -Rns virtconvert
 
-pkgname=vertconvert
+pkgname=virtconvert
 pkgver=1.1.0
 pkgrel=1
 pkgdesc="Convert and create virtual disks: VDI, VMDK, VHD, VHDX, QCOW2, OVA and more, checkpoints included"
@@ -26,10 +26,10 @@ optdepends=('virtualbox: run the converted disks'
             'ntfs-3g: new disks formatted with NTFS'
             'btrfs-progs: new disks formatted with Btrfs'
             'xfsprogs: new disks formatted with XFS')
-provides=('virtconvert')
-conflicts=('virtconvert')
-replaces=('virtconvert')
-install=vertconvert.install
+# vertconvert: the 1.1 build that was briefly misspelt VertConvert&Create
+conflicts=('vertconvert')
+replaces=('vertconvert')
+install=virtconvert.install
 source=()
 sha256sums=()
 
@@ -72,12 +72,12 @@ check() {
 package() {
   cd "$srcdir/$pkgname"
   python -m installer --destdir="$pkgdir" dist/*.whl
-  install -Dm644 data/io.github.oreo1298.VertConvertCreate.desktop \
-    "$pkgdir/usr/share/applications/io.github.oreo1298.VertConvertCreate.desktop"
-  install -Dm644 data/io.github.oreo1298.VertConvertCreate.metainfo.xml \
-    "$pkgdir/usr/share/metainfo/io.github.oreo1298.VertConvertCreate.metainfo.xml"
-  install -Dm644 vertconvert/data/vertconvert.svg \
-    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.oreo1298.VertConvertCreate.svg"
+  install -Dm644 data/io.github.oreo1298.VirtConvert.desktop \
+    "$pkgdir/usr/share/applications/io.github.oreo1298.VirtConvert.desktop"
+  install -Dm644 data/io.github.oreo1298.VirtConvert.metainfo.xml \
+    "$pkgdir/usr/share/metainfo/io.github.oreo1298.VirtConvert.metainfo.xml"
+  install -Dm644 virtconvert/data/virtconvert.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.oreo1298.VirtConvert.svg"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 NOTICE "$pkgdir/usr/share/licenses/$pkgname/NOTICE"
   install -Dm644 README.md docs/HOW-IT-WORKS.md -t "$pkgdir/usr/share/doc/$pkgname/"

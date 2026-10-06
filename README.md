@@ -1,14 +1,14 @@
-# VertConvert&Create: convert and create virtual disks
+# VirtConvert&Create: convert and create virtual disks
 
-VertConvert&Create converts virtual disks between **VirtualBox, Hyper-V, VMware and QEMU/KVM** (VDI,
+VirtConvert&Create converts virtual disks between **VirtualBox, Hyper-V, VMware and QEMU/KVM** (VDI,
 VMDK, VHD, VHDX, QCOW2, QED, OVA appliances and raw images) and **creates new disks**: empty, or
 with a partition already formatted as NTFS, exFAT, FAT32, ext4, Btrfs or XFS. It is made for Arch
 Linux and installs just as easily on Debian, Ubuntu, Fedora, openSUSE and the other popular
 distributions. There is a desktop app in the style of [EZP2019Linux](https://github.com/oreo1298/EZP2019Linux)
 and a command line for scripts.
 
-VertConvert&Create was called **VirtConvert** before version 1.1; see
-[Coming from VirtConvert](#coming-from-virtconvert) to update an existing installation.
+VirtConvert&Create is the new name of VirtConvert since version 1.1, which added creating disks and
+the other formats; see [Updating from VirtConvert 1.0](#updating-from-virtconvert-10).
 
 ![Main window, dark theme](docs/screenshots/main-dark.png)
 
@@ -26,12 +26,12 @@ VertConvert&Create was called **VirtConvert** before version 1.1; see
   entry per disk), and converting to **OVA** packs the disk with a small machine description for
   **File → Import Appliance** in VirtualBox and VMware.
 - **Checkpoints and snapshots**: a Hyper-V checkpoint (`.avhdx`, `.avhd`) or a VirtualBox
-  snapshot only holds what changed since its parent. VertConvert&Create finds the parents (also when
+  snapshot only holds what changed since its parent. VirtConvert&Create finds the parents (also when
   the files were moved or renamed) and merges the whole chain into one complete disk. The original
   files are never changed.
 - **Every copy is checked**: after converting, the new disk is compared with the source byte for
   byte before it gets its real name. An interrupted or failed conversion leaves nothing behind.
-- **Tells you how to boot it**: VertConvert&Create reads the partition table and says whether the
+- **Tells you how to boot it**: VirtConvert&Create reads the partition table and says whether the
   guest boots with UEFI or BIOS, so you know to turn on *Enable EFI* in VirtualBox, or which
   Hyper-V generation to pick.
 - **Options for each target**: dynamic or fixed disks; VMDK as one file, preallocated (with a
@@ -39,12 +39,12 @@ VertConvert&Create was called **VirtConvert** before version 1.1; see
   VHD files (fixed, rounded up to whole megabytes).
 - **Several images at once**: a list you can fill by drag and drop, converted one after the other
   with progress, speed and time left, and **Cancel**.
-- **Command line**: `vertconvert info`, `convert`, `create`, `verify`, `repair`, `formats` and `doctor`.
+- **Command line**: `virtconvert info`, `convert`, `create`, `verify`, `repair`, `formats` and `doctor`.
 - Dark and light themes that follow the desktop setting.
 
-VertConvert&Create also fixes problems you would hit with `qemu-img` alone:
+VirtConvert&Create also fixes problems you would hit with `qemu-img` alone:
 
-| Problem with plain `qemu-img` | What VertConvert&Create does |
+| Problem with plain `qemu-img` | What VirtConvert&Create does |
 |---|---|
 | A differencing VHD is converted **without its parent, without any error**: the result is missing most of the disk. A differencing VHDX is refused. | Reads the chain itself and hands qemu-img the merged disk. |
 | A fixed VHD is taken for a raw image, and VirtualBox-made VHDs are cut short by a few KB (qemu-img sizes them by their CHS geometry). | Detects the format itself and always uses the full disk size, like Hyper-V and VirtualBox do. |
@@ -61,14 +61,14 @@ VertConvert&Create also fixes problems you would hit with `qemu-img` alone:
 
 ## Installation
 
-VertConvert&Create needs **Python 3.10+**, **qemu-img** (from the QEMU project; it writes the
+VirtConvert&Create needs **Python 3.10+**, **qemu-img** (from the QEMU project; it writes the
 disks) and, for the app, **PySide6** (Qt 6). To create formatted disks it uses your distribution's
 **mkfs programs** (see [New disks](#new-disks)). The installers below take care of all of it.
 VirtualBox itself is not needed.
 
 ### Arch Linux, CachyOS, EndeavourOS, Manjaro, Garuda and other Arch-based distributions
 
-The repository includes a PKGBUILD, so VertConvert&Create installs as a normal pacman package. Run
+The repository includes a PKGBUILD, so VirtConvert&Create installs as a normal pacman package. Run
 these as your normal user (not root); `makepkg` asks for your password when it installs the package:
 
 ```sh
@@ -78,7 +78,7 @@ cd VirtConvert
 makepkg -si
 ```
 
-This installs the `vertconvert` command, **VertConvert&Create** in your application menu, and the
+This installs the `virtconvert` command, **VirtConvert&Create** in your application menu, and the
 dependencies `python`, `pyside6`, `qt6-svg`, `qt6-wayland` and `qemu-img`. For formatted new disks,
 add the file systems you want (ext4 needs nothing extra):
 
@@ -95,7 +95,7 @@ sudo pacman -S --needed dosfstools exfatprogs ntfs-3g btrfs-progs xfsprogs
   ```
 
   (`-f` rebuilds even if a package of the same version is already there.)
-- **Uninstall:** `sudo pacman -Rns vertconvert` (your settings in `~/.config/vertconvert` stay;
+- **Uninstall:** `sudo pacman -Rns virtconvert` (your settings in `~/.config/virtconvert` stay;
   delete the folder if you like. qemu-img is removed too if nothing else needs it.)
 
 If `makepkg` says `PKGBUILD does not exist`, you are not inside the `VirtConvert` folder.
@@ -104,7 +104,7 @@ If `makepkg` says `PKGBUILD does not exist`, you are not inside the `VirtConvert
 
 `packaging/install.sh` recognises your package manager (**apt, dnf, zypper, xbps, apk, eopkg,
 emerge**), installs qemu-img, Python and the mkfs programs after asking, installs
-VertConvert&Create into `/opt/vertconvert`, and adds the `vertconvert` command and the menu entry:
+VirtConvert&Create into `/opt/virtconvert`, and adds the `virtconvert` command and the menu entry:
 
 ```sh
 git clone https://github.com/oreo1298/VirtConvert.git
@@ -136,18 +136,18 @@ Notes:
   install the dependencies (and the mkfs programs) on a system that already has qemu-img.
 - Where your distribution packages PySide6 (Fedora, openSUSE Tumbleweed, Debian 13, Alpine), it is
   used; elsewhere (Ubuntu 22.04/24.04, Mint 21/22, Debian 12, RHEL/Rocky) the installer downloads
-  PySide6-Essentials (about 100 MB) into VertConvert&Create's own folder. Nothing else on your
+  PySide6-Essentials (about 100 MB) into VirtConvert&Create's own folder. Nothing else on your
   system changes.
 - RHEL/Rocky 9 and openSUSE Leap ship an older Python next to newer ones; the installer picks or
   installs Python 3.10+ by itself.
 - If a package doesn't exist on your release, the installer says so and installs the rest;
-  `vertconvert doctor` shows what's still missing and the command to install it.
+  `virtconvert doctor` shows what's still missing and the command to install it.
 - **Immutable systems** (Fedora Silverblue/Kinoite, Bazzite, SteamOS, openSUSE Aeon): run
   `sudo rpm-ostree install qemu-img` (then restart), and use the per-user install below.
 - **NixOS**: add `qemu-utils` and `python3Packages.pyside6` to your configuration, then run
-  `./vertconvert.sh` or the per-user install.
+  `./virtconvert.sh` or the per-user install.
 
-### Per-user install (no sudo for VertConvert&Create itself)
+### Per-user install (no sudo for VirtConvert&Create itself)
 
 ```sh
 ./packaging/install.sh --user        # into ~/.local; qemu-img still comes from your package manager
@@ -157,36 +157,33 @@ Notes:
 
 Make sure `~/.local/bin` is on your `PATH` (the installer tells you if it isn't).
 
-### Coming from VirtConvert
+### Updating from VirtConvert 1.0
 
-Version 1.1 renamed the app from VirtConvert to VertConvert&Create. The command is now
-`vertconvert` (it was `virtconvert`), and the app is listed as **VertConvert&Create** in the menu.
-Update the way you installed it; the old version is replaced and your settings are carried over:
+Version 1.1 renamed VirtConvert to **VirtConvert&Create**. The command (`virtconvert`), the
+package, the install folders and your settings stay the same, so update the usual way: `git pull`
+and `makepkg -si` on Arch, `./packaging/update.sh` everywhere else. Run `./packaging/install.sh
+--deps` once if you want the installer to add the mkfs programs for formatted new disks.
 
-- **Arch:** `cd VirtConvert && git pull && makepkg -si`. pacman says that `vertconvert` and
-  `virtconvert` are in conflict and asks whether to remove `virtconvert`; answer **y**.
-- **Installer:** `cd VirtConvert && git pull && ./packaging/install.sh` (add `--user` if you
-  installed per user). It removes `/opt/virtconvert` (or `~/.local/lib/virtconvert`), the old
-  command and the old menu entry, and installs VertConvert&Create in their place.
-  `./packaging/uninstall.sh` removes either name.
-
-The repository is still at `github.com/oreo1298/VirtConvert`, so your existing clone keeps working.
+If you installed the 1.1 build that was briefly published as *VertConvert&Create* (command
+`vertconvert`), updating replaces it: pacman asks whether to remove the conflicting `vertconvert`
+package (answer **y**), and the installer removes `/opt/vertconvert` (or `~/.local/lib/vertconvert`),
+its command and its menu entry. Its settings are taken over.
 
 ### Try it without installing
 
 ```sh
-./vertconvert.sh                     # the app (needs Python, PySide6 and qemu-img)
-./vertconvert.sh convert disk.vhdx   # the command line
+./virtconvert.sh                     # the app (needs Python, PySide6 and qemu-img)
+./virtconvert.sh convert disk.vhdx   # the command line
 ```
 
 ### Check the installation
 
 ```sh
-vertconvert doctor
+virtconvert doctor
 ```
 
 ```
-VertConvert&Create 1.1.0 on Ubuntu 24.04.5 LTS
+VirtConvert&Create 1.1.0 on Ubuntu 24.04.5 LTS
   ✓ Python             3.12.3
   ✓ qemu-img           8.2.2 (/usr/bin/qemu-img)
   ✓ PySide6 (the app)  6.11.2
@@ -201,12 +198,12 @@ VertConvert&Create 1.1.0 on Ubuntu 24.04.5 LTS
   ✓ XFS (new disks)    /usr/sbin/mkfs.xfs
 ```
 
-If qemu-img is missing, `vertconvert doctor` prints the command for your distribution, and
-`vertconvert doctor --install-qemu` (or **Help → Install qemu-img…** in the app) installs it.
+If qemu-img is missing, `virtconvert doctor` prints the command for your distribution, and
+`virtconvert doctor --install-qemu` (or **Help → Install qemu-img…** in the app) installs it.
 
 ## Using the app
 
-1. Start **VertConvert&Create** from your application menu (or run `vertconvert`).
+1. Start **VirtConvert&Create** from your application menu (or run `virtconvert`).
 2. **Add** your images, or drop them on the window. Hyper-V disks (and QCOW2, raw and the others)
    are set to become VDI files for VirtualBox, VirtualBox and VMware disks to become VHDX files for
    Hyper-V; the app remembers what you pick for each. For a checkpoint (`.avhdx`), add the newest
@@ -235,29 +232,29 @@ save it. The box at the bottom says what you will get, or what's missing.
 ### Using a converted disk in VirtualBox
 
 1. Shut the virtual machine down in Hyper-V first (not *Save*): a running or saved VM gives an
-   inconsistent copy (VertConvert&Create stops if a file changes while it is being converted).
+   inconsistent copy (VirtConvert&Create stops if a file changes while it is being converted).
 2. In VirtualBox: **New**, choose the guest type, and under **Hard Disk** pick **Use an Existing
    Virtual Hard Disk File** and select the `.vdi` (or `.vmdk`).
-3. If VertConvert&Create said the disk **boots with UEFI** (Hyper-V generation 2 VMs, most Windows
+3. If VirtConvert&Create said the disk **boots with UEFI** (Hyper-V generation 2 VMs, most Windows
    10/11 installs), turn on **Settings → System → Enable EFI**.
 4. Windows guests: if Windows stops with `INACCESSIBLE_BOOT_DEVICE`, attach the disk to a SATA
    (AHCI) controller (the default). Install the VirtualBox Guest Additions afterwards; you can
    uninstall the Hyper-V integration services.
 
 An **OVA** is imported instead: **File → Import Appliance**, pick the `.ova`, and adjust the CPUs,
-memory and network while importing (VertConvert&Create sets 2 CPUs, 2 GB of memory, 4 GB for
+memory and network while importing (VirtConvert&Create sets 2 CPUs, 2 GB of memory, 4 GB for
 Windows, a SATA disk and a NAT network card).
 
 ### Using a converted disk in Hyper-V
 
-1. In Hyper-V Manager: **New → Virtual Machine**. Pick **Generation 2** if VertConvert&Create said
+1. In Hyper-V Manager: **New → Virtual Machine**. Pick **Generation 2** if VirtConvert&Create said
    the disk boots with **UEFI**, **Generation 1** for **BIOS**. (Generation 2 needs VHDX.)
 2. Under **Connect Virtual Hard Disk**, choose **Use an existing virtual hard disk** and select the
    `.vhdx` or `.vhd` file.
 3. Linux guests on generation 2: turn Secure Boot off or use the *Microsoft UEFI Certificate
    Authority* template.
 
-For **Azure**, convert with **VHD** and *For Azure* ticked (`vertconvert convert -t azure`): Azure
+For **Azure**, convert with **VHD** and *For Azure* ticked (`virtconvert convert -t azure`): Azure
 needs a fixed VHD whose size is a whole number of megabytes. Upload it as a page blob.
 
 ### Using a disk in QEMU/KVM, Proxmox or VMware
@@ -270,7 +267,7 @@ needs a fixed VHD whose size is a whole number of megabytes. Upload it as a page
 
 ## New disks
 
-**New disk** in the app, or `vertconvert create` on the command line, makes a disk in any of the
+**New disk** in the app, or `virtconvert create` on the command line, makes a disk in any of the
 eight formats:
 
 - **Empty**: nothing on it, to install an operating system on (attach it together with an
@@ -294,39 +291,39 @@ is there for old systems and BIOS-only tools (up to 2 TB). Partitions start at 1
 Windows and Linux installers make. VHDX disks with Linux file systems use 1 MB blocks (as
 Microsoft recommends for Linux guests), so the file stays small.
 
-`vertconvert doctor` shows which file systems you can make and how to install the rest; the app
+`virtconvert doctor` shows which file systems you can make and how to install the rest; the app
 names the missing package when you pick one.
 
 ## Command line
 
-Running `vertconvert` without a command opens the app (`vertconvert disk.vhdx` opens it with the
+Running `virtconvert` without a command opens the app (`virtconvert disk.vhdx` opens it with the
 file in the list). Everything is also available as a command:
 
 ```sh
-vertconvert info disk.vhdx                  # format, size, partitions, boot mode, parents
-vertconvert info --json *.vhdx              # the same, for scripts
-vertconvert info appliance.ova              # each disk inside the appliance
+virtconvert info disk.vhdx                  # format, size, partitions, boot mode, parents
+virtconvert info --json *.vhdx              # the same, for scripts
+virtconvert info appliance.ova              # each disk inside the appliance
 
-vertconvert convert disk.vhdx               # -> disk.vdi (VirtualBox)
-vertconvert convert disk.vdi                # -> disk.vhdx (VirtualBox and VMware disks go to Hyper-V)
-vertconvert convert "Win_8E2C….avhdx"       # a checkpoint: merged into one disk -> Win.vdi
-vertconvert convert -t vmdk -d ~/VMs *.vhdx # several at once, into a folder
-vertconvert convert -t vhdx --fixed disk.vdi
-vertconvert convert -t vmdk --split disk.vdi   # VMware Workstation: disk.vmdk + disk-s001.vmdk…
-vertconvert convert -t qcow2 disk.vhdx      # QEMU/KVM, Proxmox
-vertconvert convert -t ova disk.vhdx        # an appliance for File → Import Appliance
-vertconvert convert appliance.ova           # every disk of an appliance
-vertconvert convert -t azure -o os.vhd disk.vdi
+virtconvert convert disk.vhdx               # -> disk.vdi (VirtualBox)
+virtconvert convert disk.vdi                # -> disk.vhdx (VirtualBox and VMware disks go to Hyper-V)
+virtconvert convert "Win_8E2C….avhdx"       # a checkpoint: merged into one disk -> Win.vdi
+virtconvert convert -t vmdk -d ~/VMs *.vhdx # several at once, into a folder
+virtconvert convert -t vhdx --fixed disk.vdi
+virtconvert convert -t vmdk --split disk.vdi   # VMware Workstation: disk.vmdk + disk-s001.vmdk…
+virtconvert convert -t qcow2 disk.vhdx      # QEMU/KVM, Proxmox
+virtconvert convert -t ova disk.vhdx        # an appliance for File → Import Appliance
+virtconvert convert appliance.ova           # every disk of an appliance
+virtconvert convert -t azure -o os.vhd disk.vdi
 
-vertconvert create new.vdi -s 64G                        # an empty 64 GB disk
-vertconvert create data.vhdx -s 1T --fs ntfs -L Data     # GPT + NTFS, ready to use
-vertconvert create usb.vmdk -s 16G --fs fat32 --table mbr
-vertconvert create linux -t qcow2 -s 200G --fs ext4      # -> linux.qcow2
+virtconvert create new.vdi -s 64G                        # an empty 64 GB disk
+virtconvert create data.vhdx -s 1T --fs ntfs -L Data     # GPT + NTFS, ready to use
+virtconvert create usb.vmdk -s 16G --fs fat32 --table mbr
+virtconvert create linux -t qcow2 -s 200G --fs ext4      # -> linux.qcow2
 
-vertconvert verify disk.vhdx disk.vdi       # do two images contain the same disk?
-vertconvert repair disk.vhdx                # apply the log of a VHDX that wasn't closed cleanly
-vertconvert formats                         # formats, shortcuts and file systems
-vertconvert doctor                          # is everything installed?
+virtconvert verify disk.vhdx disk.vdi       # do two images contain the same disk?
+virtconvert repair disk.vhdx                # apply the log of a VHDX that wasn't closed cleanly
+virtconvert formats                         # formats, shortcuts and file systems
+virtconvert doctor                          # is everything installed?
 ```
 
 Options for `convert`: `-t/--to` (`vdi`, `vmdk`, `vhd`, `vhdx`, `qcow2`, `qed`, `ova`, `raw`, or the
@@ -363,19 +360,19 @@ qemu-img's DMG modules (a separate package on some distributions).
 
 ## Troubleshooting
 
-- **"qemu-img missing"**: run `vertconvert doctor` for the install command, or click the
+- **"qemu-img missing"**: run `virtconvert doctor` for the install command, or click the
   qemu-img box in the toolbar.
 - **"Making NTFS needs mkntfs, which isn't installed"**: install the package the message names
-  (also shown by `vertconvert doctor`), then try again.
+  (also shown by `virtconvert doctor`), then try again.
 - **"The parent of … was not found"**: a checkpoint or snapshot needs the files it is based on.
   Put them in the same folder (Hyper-V keeps them in *Virtual Hard Disks*, VirtualBox in the VM's
   folder and its *Snapshots* folder), or use **Choose parent…** (`--parent` on the command line).
-  VertConvert&Create matches parents by their ID, so renamed files are found too.
+  VirtConvert&Create matches parents by their ID, so renamed files are found too.
 - **"has the right name but a different ID"**: the parent was changed after the checkpoint was
   made (for example, it was started on its own). Merging them would give a damaged disk. If you
   are sure the files belong together, **Choose parent…** offers to use it anyway.
 - **"The VHDX was not closed cleanly"**: the VM was running or Windows crashed, and the file's log
-  still holds changes. Shut the VM down in Hyper-V, or use **Repair…** (`vertconvert repair`),
+  still holds changes. Shut the VM down in Hyper-V, or use **Repair…** (`virtconvert repair`),
   which applies the log to the file like Hyper-V would. Make a copy first if you can.
 - **"This disk uses 4 KB sectors"**: VirtualBox (and qemu-img's VHDX writer) only offer
   512-byte sectors, so a guest installed on a 4 KB-sector VHDX won't find its partitions in the
@@ -391,14 +388,14 @@ qemu-img's DMG modules (a separate package on some distributions).
   keeps its ID. Convert again, or give the copy a new ID with
   `VBoxManage internalcommands sethduuid file.vdi`.
 - **Not enough space**: a dynamic target needs about as much space as the data on the disk, a
-  fixed one the whole disk size, an OVA twice that for a moment. VertConvert&Create warns before
+  fixed one the whole disk size, an OVA twice that for a moment. VirtConvert&Create warns before
   it starts.
-- **Reporting a problem**: include the output of `vertconvert doctor` and `vertconvert info` for
+- **Reporting a problem**: include the output of `virtconvert doctor` and `virtconvert info` for
   the image, and the Activity log.
 
 ## How it works
 
-VertConvert&Create reads the image headers itself instead of letting qemu-img guess, finds the
+VirtConvert&Create reads the image headers itself instead of letting qemu-img guess, finds the
 parents of differencing images and reads them as one disk, then runs `qemu-img convert` with the
 format given explicitly. For a checkpoint chain, the merged disk is served to qemu-img through a
 small read-only NBD server on a private socket, so no temporary copy of the disk is needed. A disk
@@ -412,22 +409,22 @@ qemu-img then writes the chosen format, skipping the empty parts. Details in
 
 | Path | Contents |
 |---|---|
-| `vertconvert/core/formats.py` | The formats and their properties |
-| `vertconvert/core/probe.py` | Recognising formats, reading headers |
-| `vertconvert/core/vhd.py`, `vhdx.py`, `vdi.py` | Block maps of VHD, VHDX and VDI, differencing included |
-| `vertconvert/core/chain.py` | Finding parents, reading a chain as one disk |
-| `vertconvert/core/nbd.py` | The read-only NBD server qemu-img reads merged chains from |
-| `vertconvert/core/ova.py` | Reading and writing OVA appliances |
-| `vertconvert/core/qemu.py` | Running qemu-img |
-| `vertconvert/core/convert.py` | Planning, converting, verifying, publishing |
-| `vertconvert/core/create.py` | New disks: partition, format, write |
-| `vertconvert/core/partitions.py` | Reading and writing GPT and MBR partition tables |
-| `vertconvert/gui/` | PySide6 app |
-| `vertconvert/cli.py` | Command line |
+| `virtconvert/core/formats.py` | The formats and their properties |
+| `virtconvert/core/probe.py` | Recognising formats, reading headers |
+| `virtconvert/core/vhd.py`, `vhdx.py`, `vdi.py` | Block maps of VHD, VHDX and VDI, differencing included |
+| `virtconvert/core/chain.py` | Finding parents, reading a chain as one disk |
+| `virtconvert/core/nbd.py` | The read-only NBD server qemu-img reads merged chains from |
+| `virtconvert/core/ova.py` | Reading and writing OVA appliances |
+| `virtconvert/core/qemu.py` | Running qemu-img |
+| `virtconvert/core/convert.py` | Planning, converting, verifying, publishing |
+| `virtconvert/core/create.py` | New disks: partition, format, write |
+| `virtconvert/core/partitions.py` | Reading and writing GPT and MBR partition tables |
+| `virtconvert/gui/` | PySide6 app |
+| `virtconvert/cli.py` | Command line |
 
 The readers are tested against images written from the format specifications, and against
 VirtualBox and libvhdi as independent implementations (`tests/test_references.py`): VirtualBox
-reads every format VertConvert&Create writes, imports its OVA files and reads its new disks, and
+reads every format VirtConvert&Create writes, imports its OVA files and reads its new disks, and
 merged checkpoint chains match what VirtualBox and libvhdi read. New file systems are checked with
 their own `fsck` programs and `blkid`, partition tables with `sgdisk`.
 
@@ -438,7 +435,7 @@ python -m venv --system-site-packages .venv && . .venv/bin/activate
 pip install -e '.[dev]'
 make test                               # 190+ tests; the app's run offscreen
 make lint
-./vertconvert.sh                        # the app from this folder
+./virtconvert.sh                        # the app from this folder
 make screenshots                        # regenerate docs/screenshots
 ```
 
@@ -450,5 +447,5 @@ VirtualBox and libvhdi's Python module (`python3-libvhdi`) installed, the refere
 MIT licensed, see [LICENSE](LICENSE) and [NOTICE](NOTICE). The disks are written by qemu-img from
 the [QEMU](https://www.qemu.org) project, and formatted by your distribution's mkfs programs. The
 look of the app is shared with [EZP2019Linux](https://github.com/oreo1298/EZP2019Linux) and the
-other apps by the same author. VertConvert&Create is not affiliated with Microsoft, Oracle,
+other apps by the same author. VirtConvert&Create is not affiliated with Microsoft, Oracle,
 Broadcom/VMware, Parallels or Apple.

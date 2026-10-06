@@ -1,14 +1,15 @@
-# VertConvert&Create — repository notes for Claude
+# VirtConvert&Create — repository notes for Claude
 
 Converts virtual disks (VDI, VMDK, VHD, VHDX, QCOW2, QED, OVA, raw; reads Parallels, DMG, ISO, QCOW, OVF too;
-checkpoints merged) and creates new ones (empty, partitioned, or formatted with mkfs): the `vertconvert` command
-(no arguments → the PySide6 app). Named VirtConvert before 1.1 (installers and settings migrate the old name).
-Python ≥ 3.10. qemu-img does the copying; VertConvert&Create reads headers, merges differencing chains, builds new
+checkpoints merged) and creates new ones (empty, partitioned, or formatted with mkfs): the `virtconvert` command
+(no arguments → the PySide6 app). Called VirtConvert in 1.0; a 1.1 build was briefly misspelt VertConvert&Create
+(command `vertconvert`): installers, PKGBUILD and settings clean that one up.
+Python ≥ 3.10. qemu-img does the copying; VirtConvert&Create reads headers, merges differencing chains, builds new
 disks and checks results. Primary target Arch Linux (PKGBUILD); `packaging/install.sh` covers the other
 distributions. Design notes: docs/HOW-IT-WORKS.md.
 
 ## Layout
-- `vertconvert/core/` — stdlib only, no Qt imports:
+- `virtconvert/core/` — stdlib only, no Qt imports:
   `formats.py` (Format table, `GUI_TARGETS`; defaults: VirtualBox formats → VHDX, everything else → VDI),
   `probe.py` (detect format, read headers → `ImageInfo`; `member` = a disk inside an OVA), `vhd.py` / `vhdx.py` /
   `vdi.py` (headers + `Layer.map()` block maps, differencing included), `layers.py` (DATA/ZERO/PARENT extents,
@@ -19,12 +20,12 @@ distributions. Design notes: docs/HOW-IT-WORKS.md.
   write), `convert.py` (`Target`, `Job`, `make_plan`, `execute` → `write_image` shared with create,
   `verify_images`, `repair`), `create.py` (`FILESYSTEMS`, `NewDisk`, `make_create_plan`, `create_disk`),
   `system.py` (doctor, distro package names for qemu-img and the mkfs tools, `find_program` incl. sbin).
-- `vertconvert/gui/` — PySide6. `main_window.py` (toolbar, Image / Convert to / Options cards, queue table,
+- `virtconvert/gui/` — PySide6. `main_window.py` (toolbar, Image / Convert to / Options cards, queue table,
   Activity log, status bar), `pickers.py` (`TargetPicker`: 2×4 format grid + variants, used by both windows),
   `create_dialog.py` (New disk), `queue.py` (`Item` incl. `member`, `QueueModel`, `StatusDelegate`),
   `dialogs.py`; `theme.py`, `icons.py`, `widgets.py`, `worker.py` are the suite's shared design system
   (EZP2019Linux).
-- `vertconvert/cli.py` — sub-commands info/convert/create/verify/repair/formats/doctor.
+- `virtconvert/cli.py` — sub-commands info/convert/create/verify/repair/formats/doctor.
 - `tests/imagewriter.py` writes test images from the specs; `tools/screenshot.py` makes docs/screenshots;
   `tools/installer-smoke.sh` is the per-distro installer test CI runs in containers.
 
@@ -57,6 +58,6 @@ python -m venv --system-site-packages .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 make test            # QT_QPA_PLATFORM=offscreen pytest (needs qemu-img; VirtualBox/libvhdi tests skip without them)
 make lint            # ruff + bash -n
-./vertconvert.sh     # the app
-vertconvert info some.vhdx
+./virtconvert.sh     # the app
+virtconvert info some.vhdx
 ```

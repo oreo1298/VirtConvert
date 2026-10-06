@@ -109,7 +109,7 @@ class MainWindow(QMainWindow):
     def __init__(self, qemu: QemuImg | None = None):
         super().__init__()
         self.qemu = qemu
-        self.settings = QSettings("vertconvert", "vertconvert")
+        self.settings = QSettings("virtconvert", "virtconvert")
         self.model = QueueModel(self)
         self.runner = OperationRunner(self)
         self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="inspect")
@@ -197,7 +197,7 @@ class MainWindow(QMainWindow):
                             "Apply the log of a VHDX that wasn't closed cleanly")
         self.act_copy_path = a("Copy output path", "copy", self.copy_output_path, None)
         self.act_install_qemu = a("Install qemu-img…", "plus", self.offer_qemu_install, None,
-                                  "Install the qemu-img package VertConvert&Create needs")
+                                  "Install the qemu-img package VirtConvert&Create needs")
         self.act_quit = a("Quit", None, self.close, "Ctrl+Q")
         self.act_about = a("About", "info", self.show_about, None)
         self.act_theme = a("Toggle dark/light", "moon", self.toggle_theme, "Ctrl+Shift+T")

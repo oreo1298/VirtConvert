@@ -1,6 +1,6 @@
-# How VertConvert&Create works
+# How VirtConvert&Create works
 
-VertConvert&Create is a careful front end to `qemu-img`: it decides what the source is, finds everything
+VirtConvert&Create is a careful front end to `qemu-img`: it decides what the source is, finds everything
 the source depends on, decides how to write the target, lets qemu-img do the copying, and checks
 the result. New disks are put together the same way, from a partition table and a file system
 made by the distribution's mkfs program. This page describes each step and why it is there.
@@ -9,7 +9,7 @@ made by the distribution's mkfs program. This page describes each step and why i
 
 qemu-img can guess formats, but it guesses from the first bytes of a file only. A **fixed VHD**
 is raw data followed by a 512-byte footer, so qemu-img takes it for a raw image (and would then
-copy the footer into the disk). VertConvert&Create therefore looks for:
+copy the footer into the disk). VirtConvert&Create therefore looks for:
 
 | Format | Signature |
 |---|---|
@@ -40,14 +40,14 @@ a damaged VHDX header copy, a VHDX log that still has to be applied, a cut-off f
 A VHD footer holds both a byte size (`current size`) and a CHS geometry. Virtual PC showed disks
 at the geometry's size; Hyper-V, VirtualBox and everything newer use the byte size. qemu-img uses
 the geometry for every file not made by a program on its short list, and so cuts the last few KB
-off VHDs made by VirtualBox — where a GPT disk keeps its backup partition table. VertConvert&Create always
+off VHDs made by VirtualBox — where a GPT disk keeps its backup partition table. VirtConvert&Create always
 uses the byte size and tells qemu-img to do the same (`force_size_calc=current_size`). VHD files
-VertConvert&Create writes are created with `force_size=on`, so their size is exact (Hyper-V and Azure
+VirtConvert&Create writes are created with `force_size=on`, so their size is exact (Hyper-V and Azure
 need that).
 
 ### Partition table and boot mode (`core/partitions.py`)
 
-The first 128 KB of the virtual disk are read (by VertConvert&Create's own readers, or `qemu-img dd`)
+The first 128 KB of the virtual disk are read (by VirtConvert&Create's own readers, or `qemu-img dd`)
 and checked for a GPT (at 512-byte and 4 KB sectors) or an MBR. A GPT disk with an EFI system
 partition boots with UEFI (VirtualBox: *Enable EFI*; Hyper-V: generation 2, which needs VHDX), an
 MBR disk with boot code or an active partition with BIOS (generation 1). A GPT disk with a *BIOS
@@ -76,7 +76,7 @@ disk that changed since its parent. qemu-img can't read these chains:
 - a **differencing VHDX** is refused ("Invalid argument");
 - a **differencing VDI** is refused.
 
-VertConvert&Create implements the block maps of the three formats itself (read-only):
+VirtConvert&Create implements the block maps of the three formats itself (read-only):
 
 - **VHD**: a big-endian block allocation table; each allocated block starts with a sector bitmap
   (most significant bit first). In a differencing disk, a set bit means the sector is in this
@@ -112,16 +112,16 @@ Each differencing image names its parent by an ID and, for VHD and VHDX, by path
   written) and `relative_path`, `absolute_win32_path`, `volume_path`;
 - VDI: only the parent's UUID; VirtualBox keeps the paths in the VM's `.vbox` file.
 
-VertConvert&Create tries, in order: files the user pointed at, the stored paths (Windows paths are
+VirtConvert&Create tries, in order: files the user pointed at, the stored paths (Windows paths are
 turned into Linux ones and matched without regard to case, relative to the child), the
 `.vbox` file of the VM, and finally every image of the same format next to the child, in its
 parent folder and in `Snapshots`. A candidate is only accepted if its ID matches. A file with the
 right name but a different ID means the parent was modified after the checkpoint was taken;
-merging would give a damaged disk, so VertConvert&Create stops (the user can override this).
+merging would give a damaged disk, so VirtConvert&Create stops (the user can override this).
 
 ### Feeding the merged disk to qemu-img (`core/nbd.py`)
 
-Rather than writing a temporary copy, VertConvert&Create starts a small read-only **NBD server** on a
+Rather than writing a temporary copy, VirtConvert&Create starts a small read-only **NBD server** on a
 Unix socket in a private temporary folder and gives qemu-img
 `{"driver": "raw", "file": {"driver": "nbd", "server": {"type": "unix", "path": …}}}` as the
 source. The server implements the fixed newstyle handshake (`NBD_OPT_GO`, `NBD_OPT_INFO`,
@@ -167,7 +167,7 @@ using `qemu-img convert -p` and turning its progress output into progress for th
 command line (cancelling stops the process group). Two runs never share a work folder. Then:
 
 1. **VHDX fix-up**: qemu-img leaves the *required* flag of the BAT and metadata regions clear,
-   which [MS-VHDX] asks to be set; VirtualBox refuses such files. VertConvert&Create sets the flags and
+   which [MS-VHDX] asks to be set; VirtualBox refuses such files. VirtConvert&Create sets the flags and
    recomputes the region table checksums.
    **OVA packing**: the stream-optimized VMDK goes into a tar archive after an OVF 1.0 descriptor
    (2 CPUs; 2 GB of memory, 4 GB when the partitions look like Windows; a SATA controller with the
@@ -218,7 +218,7 @@ the temporary folder, when the output drive has no sparse files, like FAT and ex
    their metadata over the disk and each touched 32 MB block would otherwise be allocated.
 
 The new disk is compared with the raw file: by `qemu-img compare`, or for a dynamic VHDX by
-VertConvert&Create's own reader, which only reads the blocks either side holds (qemu-img's VHDX
+VirtConvert&Create's own reader, which only reads the blocks either side holds (qemu-img's VHDX
 driver can't report empty blocks, so its compare would read all of a large empty disk).
 
 ## 6. Testing
@@ -233,9 +233,9 @@ driver can't report empty blocks, so its compare would read all of a large empty
 - `tests/test_create.py` makes every file system with GPT and MBR and checks it with its own
   `fsck`, `blkid` and `sgdisk`, plus the GPT checksums and layout against the specification.
 - `tests/test_references.py` compares with independent implementations: VirtualBox reads every
-  format VertConvert&Create writes and gives the same bytes, imports its OVA files, reads its new
-  disks, and exports an OVA that VertConvert&Create reads; merged VHD and VDI chains equal
+  format VirtConvert&Create writes and gives the same bytes, imports its OVA files, reads its new
+  disks, and exports an OVA that VirtConvert&Create reads; merged VHD and VDI chains equal
   VirtualBox's reading of them, including a differencing VHD written by VirtualBox itself; merged
   VHDX chains equal libvhdi's.
 - `tests/test_gui.py` drives the app offscreen; `tools/installer-smoke.sh` installs, uses,
-  updates and removes VertConvert&Create inside containers of other distributions (CI).
+  updates and removes VirtConvert&Create inside containers of other distributions (CI).

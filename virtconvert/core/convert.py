@@ -214,7 +214,7 @@ class Plan:
 
     @property
     def uses_reader(self) -> bool:
-        """VertConvert&Create reads the source itself: a chain, zeros added at the end, or a VHDX
+        """VirtConvert&Create reads the source itself: a chain, zeros added at the end, or a VHDX
         with 4 KB sectors (qemu-img's VHDX driver only handles 512-byte sectors)."""
         info = self.info
         if info.member:
@@ -258,7 +258,7 @@ def make_plan(job: Job, qemu: QemuImg | None, info: ImageInfo | None = None) -> 
                                  "not read the last few KB of a stream-optimized VMDK.")
     plan.size = size
     if qemu is None:
-        plan.errors.append("qemu-img is not installed. Run 'vertconvert doctor' to see how to install it.")
+        plan.errors.append("qemu-img is not installed. Run 'virtconvert doctor' to see how to install it.")
     else:
         if qemu.too_old:
             plan.errors.append(f"qemu-img {qemu.version_text} is too old; version 2.10 or newer is needed.")
@@ -415,7 +415,7 @@ def execute(plan: Plan, qemu: QemuImg, progress: ProgressFn | None = None,
     work = work_folder(job.output)
     try:
         if plan.uses_reader:
-            # VertConvert&Create reads the source (merging a chain, adding zeros at the end)
+            # VirtConvert&Create reads the source (merging a chain, adding zeros at the end)
             # and qemu-img reads that through NBD
             reader = ChainReader.for_image(info, plan.size)
             server = NbdServer(reader).start()

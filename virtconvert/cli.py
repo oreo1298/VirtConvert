@@ -312,7 +312,7 @@ def cmd_formats(args) -> int:
           "separate -flat data file),\n          --split makes a VMDK in 2 GB files.")
     print("\nWithout --to: VirtualBox disks (VDI, VMDK) become VHDX for Hyper-V; everything else "
           "becomes VDI for VirtualBox.")
-    print("\nFile systems for new disks (vertconvert create --fs):")
+    print("\nFile systems for new disks (virtconvert create --fs):")
     for fs, tool in zip(FILESYSTEMS, available_filesystems().values()):
         missing = "" if tool else f"  (needs {fs.tools[0]}: {system.install_command(system.package_for(fs.package))})"
         print(f"  {fs.key:<7} {fs.title}{missing}")
@@ -320,7 +320,7 @@ def cmd_formats(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    print(f"VertConvert&Create {__version__} on {system.distro_name()}")
+    print(f"VirtConvert&Create {__version__} on {system.distro_name()}")
     problems = 0
     for check in system.doctor():
         mark = "✓" if check.ok else ("·" if check.optional else "✕")
@@ -338,7 +338,7 @@ def cmd_doctor(args) -> int:
             return 0 if ok else 1
     elif QemuImg.find() is None:
         print(f"\nInstall qemu-img with:  {system.qemu_install_command()}")
-        print("or run:  vertconvert doctor --install-qemu")
+        print("or run:  virtconvert doctor --install-qemu")
     return 1 if problems else 0
 
 
@@ -346,24 +346,24 @@ def cmd_doctor(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
-        prog="vertconvert",
+        prog="virtconvert",
         description="Convert and create virtual disks for VirtualBox, Hyper-V, VMware, QEMU/KVM and "
                     "more (VDI, VMDK, VHD, VHDX, QCOW2, QED, OVA, raw; also reads Parallels, DMG, ISO). "
                     "Without a command the app starts.",
         epilog="Examples:\n"
-               "  vertconvert                          open the app\n"
-               "  vertconvert info disk.vhdx           show what an image contains\n"
-               "  vertconvert convert disk.vhdx        -> disk.vdi for VirtualBox\n"
-               "  vertconvert convert disk.vdi         -> disk.vhdx for Hyper-V\n"
-               "  vertconvert convert -t vmdk *.vhdx   several at once\n"
-               "  vertconvert convert -t azure os.vdi  fixed VHD for Azure\n"
-               "  vertconvert convert -t ova vm.vhdx   an appliance for File > Import Appliance\n"
-               "  vertconvert convert app.ova          each disk of an appliance -> VDI\n"
-               "  vertconvert verify disk.vhdx disk.vdi\n"
-               "  vertconvert create new.vdi -s 50G   an empty 50 GB disk\n"
-               "  vertconvert create data.vhdx -s 1T --fs ntfs --label Data\n",
+               "  virtconvert                          open the app\n"
+               "  virtconvert info disk.vhdx           show what an image contains\n"
+               "  virtconvert convert disk.vhdx        -> disk.vdi for VirtualBox\n"
+               "  virtconvert convert disk.vdi         -> disk.vhdx for Hyper-V\n"
+               "  virtconvert convert -t vmdk *.vhdx   several at once\n"
+               "  virtconvert convert -t azure os.vdi  fixed VHD for Azure\n"
+               "  virtconvert convert -t ova vm.vhdx   an appliance for File > Import Appliance\n"
+               "  virtconvert convert app.ova          each disk of an appliance -> VDI\n"
+               "  virtconvert verify disk.vhdx disk.vdi\n"
+               "  virtconvert create new.vdi -s 50G   an empty 50 GB disk\n"
+               "  virtconvert create data.vhdx -s 1T --fs ntfs --label Data\n",
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--version", action="version", version=f"vertconvert {__version__}")
+    ap.add_argument("--version", action="version", version=f"virtconvert {__version__}")
     sub = ap.add_subparsers(dest="command", metavar="COMMAND")
 
     p = sub.add_parser("gui", help="open the app (the default)")
@@ -383,7 +383,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("files", nargs="+", metavar="IMAGE")
     p.add_argument("-t", "--to", metavar="FORMAT",
                    help="vdi, vmdk, vhd, vhdx, qcow2, qed, ova, raw, or virtualbox, hyperv, vmware, "
-                        "esxi, azure, proxmox (see 'vertconvert formats')")
+                        "esxi, azure, proxmox (see 'virtconvert formats')")
     p.add_argument("-o", "--output", metavar="FILE", help="the converted file (one source only)")
     p.add_argument("-d", "--dir", metavar="FOLDER", help="put converted files in this folder")
     p.add_argument("--fixed", action="store_true",
@@ -415,7 +415,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="partition table (default: gpt with --fs, none without)")
     p.add_argument("--fs", choices=[fs.key for fs in FILESYSTEMS], metavar="FS",
                    help=f"format the partition: {', '.join(fs.key for fs in FILESYSTEMS)} "
-                        "(see 'vertconvert formats')")
+                        "(see 'virtconvert formats')")
     p.add_argument("-L", "--label", help="the file system's name")
     p.add_argument("--no-verify", action="store_true", help="don't check the new disk afterwards")
     p.add_argument("--overwrite", action="store_true", help="replace an existing file")
@@ -438,7 +438,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("formats", help="list the formats and shortcuts")
     p.set_defaults(func=cmd_formats)
 
-    p = sub.add_parser("doctor", help="check that everything VertConvert&Create needs is installed")
+    p = sub.add_parser("doctor", help="check that everything VirtConvert&Create needs is installed")
     p.add_argument("--install-qemu", action="store_true",
                    help="install qemu-img with your package manager (asks for your password)")
     p.set_defaults(func=cmd_doctor)
@@ -446,7 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _split_files(argv: list[str]) -> tuple[list[str], list[str]]:
-    """`vertconvert disk.vhdx` opens the app with the file; tell files from commands."""
+    """`virtconvert disk.vhdx` opens the app with the file; tell files from commands."""
     if argv and argv[0] not in COMMANDS and not argv[0].startswith("-"):
         files = [a for a in argv if not a.startswith("-")]
         if all(os.path.exists(f) for f in files):
@@ -465,7 +465,7 @@ def main(argv: list[str] | None = None) -> int:
             from .gui.app import run_gui
         except ImportError as exc:
             print(f"The app needs PySide6 (Qt 6), which isn't available: {exc}\n"
-                  "Install it (see the README), or use the commands: vertconvert --help",
+                  "Install it (see the README), or use the commands: virtconvert --help",
                   file=sys.stderr)
             return 1
         return run_gui(files)
@@ -480,7 +480,7 @@ def main(argv: list[str] | None = None) -> int:
     except ConvertError as exc:
         print(f"\nError: {exc}", file=sys.stderr)
         return 1
-    except BrokenPipeError:             # `vertconvert formats | head`
+    except BrokenPipeError:             # `virtconvert formats | head`
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         return 0
 

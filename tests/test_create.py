@@ -11,16 +11,16 @@ from pathlib import Path
 import pytest
 from imagewriter import MIB, SECTOR
 
-from vertconvert import cli
-from vertconvert.core import create as C
-from vertconvert.core import formats as F
-from vertconvert.core import partitions as P
-from vertconvert.core import system
-from vertconvert.core.convert import parse_target
-from vertconvert.core.errors import ConvertError, OperationCancelled
-from vertconvert.core.images import inspect_image
-from vertconvert.core.probe import probe
-from vertconvert.core.qemu import source_spec
+from virtconvert import cli
+from virtconvert.core import create as C
+from virtconvert.core import formats as F
+from virtconvert.core import partitions as P
+from virtconvert.core import system
+from virtconvert.core.convert import parse_target
+from virtconvert.core.errors import ConvertError, OperationCancelled
+from virtconvert.core.images import inspect_image
+from virtconvert.core.probe import probe
+from virtconvert.core.qemu import source_spec
 
 GIB = 1 << 30
 TIB = 1 << 40

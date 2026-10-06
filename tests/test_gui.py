@@ -15,10 +15,10 @@ except ImportError as exc:  # Qt's libraries are missing (libEGL, ...)
 from imagewriter import MIB, SECTOR, gpt_sectors, to_sectors, write_vdi, write_vhdx  # noqa: E402
 from PySide6.QtCore import QCoreApplication  # noqa: E402
 
-import vertconvert.gui.main_window as mw  # noqa: E402
-from vertconvert.core import formats as F  # noqa: E402
-from vertconvert.core.probe import probe  # noqa: E402
-from vertconvert.gui.theme import theme  # noqa: E402
+import virtconvert.gui.main_window as mw  # noqa: E402
+from virtconvert.core import formats as F  # noqa: E402
+from virtconvert.core.probe import probe  # noqa: E402
+from virtconvert.gui.theme import theme  # noqa: E402
 
 pytestmark = pytest.mark.gui
 
@@ -141,7 +141,7 @@ def test_convert_all(window, images):
 
 
 def test_cancel(window, images, monkeypatch):
-    from vertconvert.core.errors import OperationCancelled
+    from virtconvert.core.errors import OperationCancelled
 
     def slow_execute(plan, qemu, progress, cancel, log=None):
         progress("Converting", 1, 100)
@@ -294,7 +294,7 @@ def test_vmdk_variants_and_memory(window, images, qemu):
 
 
 def test_new_disk(window, tmp_path, monkeypatch):
-    from vertconvert.gui import create_dialog
+    from virtconvert.gui import create_dialog
 
     def fill_in(dialog):
         dialog.picker.fmt_seg.set_value("vhdx")

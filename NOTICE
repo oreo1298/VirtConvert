@@ -1,9 +1,9 @@
-VertConvert&Create
+VirtConvert&Create
 ===========
 
-VertConvert&Create is an independent project. It is not affiliated with, endorsed by or sponsored by
+VirtConvert&Create is an independent project. It is not affiliated with, endorsed by or sponsored by
 Microsoft (Hyper-V, Azure), Oracle (VirtualBox) or Broadcom/VMware; those names appear only to
-describe the disk image formats VertConvert&Create works with.
+describe the disk image formats VirtConvert&Create works with.
 
 Tools it runs (not bundled)
 ---------------------------
@@ -14,7 +14,7 @@ Tools it runs (not bundled)
   mkfs.exfat (exfatprogs, GPL-2.0-or-later), mkfs.fat (dosfstools, GPL-3.0-or-later), mkfs.ext4
   (e2fsprogs, GPL-2.0), mkfs.btrfs (btrfs-progs, GPL-2.0) and mkfs.xfs (xfsprogs, GPL-2.0).
 
-VertConvert&Create reads VHD, VHDX and VDI headers and differencing images itself, following the
+VirtConvert&Create reads VHD, VHDX and VDI headers and differencing images itself, following the
 published specifications (Microsoft "Virtual Hard Disk Image Format Specification" and
 [MS-VHDX], and VirtualBox's VDI layout). It writes GPT and MBR partition tables following the UEFI
 specification, and OVA appliances following DMTF's OVF 1.0 (DSP0243).

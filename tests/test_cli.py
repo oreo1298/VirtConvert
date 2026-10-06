@@ -8,9 +8,9 @@ import tarfile
 import pytest
 from imagewriter import MIB, SECTOR, gpt_sectors, to_sectors, write_vdi, write_vhd, write_vhdx
 
-from vertconvert import cli
-from vertconvert.core import formats as F
-from vertconvert.core.probe import probe
+from virtconvert import cli
+from virtconvert.core import formats as F
+from virtconvert.core.probe import probe
 
 
 @pytest.fixture
@@ -125,7 +125,7 @@ def test_missing_qemu(images, monkeypatch, capsys):
 def test_files_open_the_app(images, monkeypatch):
     opened = {}
     try:
-        import vertconvert.gui.app as app
+        import virtconvert.gui.app as app
     except ImportError as exc:
         pytest.skip(f"PySide6 isn't usable: {exc}")
     monkeypatch.setattr(app, "run_gui", lambda files: opened.setdefault("files", files) and 0)
@@ -134,7 +134,7 @@ def test_files_open_the_app(images, monkeypatch):
 
 
 def test_one_failure_does_not_stop_the_rest(qemu, images, monkeypatch, capsys):
-    from vertconvert.core.errors import ConvertError
+    from virtconvert.core.errors import ConvertError
     real = cli.execute
     calls = []
 

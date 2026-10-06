@@ -15,12 +15,12 @@ import pytest
 from conftest import vboxmanage
 from imagewriter import MIB, SECTOR, flatten, write_vdi, write_vhd, write_vhdx
 
-from vertconvert.core import create as C
-from vertconvert.core.chain import ChainReader
-from vertconvert.core.convert import Job, execute, make_plan, parse_target
-from vertconvert.core.images import inspect_image
-from vertconvert.core.probe import probe
-from vertconvert.core.system import find_program
+from virtconvert.core import create as C
+from virtconvert.core.chain import ChainReader
+from virtconvert.core.convert import Job, execute, make_plan, parse_target
+from virtconvert.core.images import inspect_image
+from virtconvert.core.probe import probe
+from virtconvert.core.system import find_program
 
 
 def content(size, count, seed):
