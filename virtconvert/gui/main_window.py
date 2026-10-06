@@ -56,6 +56,7 @@ from ..core.errors import ConvertError, OperationCancelled, VerifyError, os_erro
 from ..core.images import expand_sources, inspect_image
 from ..core.qemu import QemuImg
 from ..core.util import human_bytes, mmss
+from ..core.writedisk import make_write_plan, write_to_disk
 from . import icons
 from .create_dialog import CreateDiskDialog, DiskPickerDialog
 from .dialogs import AboutDialog, QemuMissingDialog, ask_yes_no
@@ -83,10 +84,12 @@ from .widgets import (
     StatusDot,
     Toast,
     badge,
+    breakable,
     scaled_font,
     set_badge,
 )
 from .worker import OperationRunner
+from .write_dialog import WriteDiskDialog
 
 MAX_LOG_ENTRIES = 3000
 IMAGE_FILTER = ("Disk images (" + " ".join(f"*{e}" for f in F.ALL for e in f.extensions) + ");;"
@@ -181,6 +184,8 @@ class MainWindow(QMainWindow):
                          "Create a new virtual disk: empty, formatted, or a copy of a physical disk")
         self.act_add_disk = a("Add physical disk…", "hdd", self.add_physical_disk, "Ctrl+Shift+D",
                               "Put one of this computer's disks in the list, to convert it into a virtual disk")
+        self.act_write = a("Write to disk…", "drop", self.write_to_disk, "Ctrl+Shift+W",
+                           "Put a virtual disk onto a USB stick, memory card, SSD or hard disk (erases it)")
         self.act_add_images = QAction("Add images…", self)
         self.act_add_images.triggered.connect(lambda: self.add_files())
         self.act_remove = a("Remove", "trash", self.remove_selected, "Del",
@@ -219,12 +224,13 @@ class MainWindow(QMainWindow):
     def _build_menus(self) -> None:
         mb = self.menuBar()
         m = mb.addMenu("&File")
-        for act in (self.act_add, self.act_add_disk, self.act_new, None, self.act_folder, self.act_copy_path,
-                    None, self.act_quit):
+        for act in (self.act_add, self.act_add_disk, self.act_new, self.act_write, None, self.act_folder,
+                    self.act_copy_path, None, self.act_quit):
             m.addSeparator() if act is None else m.addAction(act)
         m = mb.addMenu("&Images")
         for act in (self.act_convert, self.act_cancel, None, self.act_remove, self.act_clear,
-                    self.act_select_all, None, self.act_parent, self.act_repair, None, self.act_verify):
+                    self.act_select_all, None, self.act_write, self.act_parent, self.act_repair, None,
+                    self.act_verify):
             m.addSeparator() if act is None else m.addAction(act)
         m = mb.addMenu("&View")
         tm = m.addMenu("Theme")
@@ -407,8 +413,12 @@ class MainWindow(QMainWindow):
         self.repair_btn = QPushButton("Repair…")
         self.repair_btn.setProperty("variant", "primary")
         self.repair_btn.clicked.connect(self.repair_selected)
+        self.write_btn = QPushButton("Write to disk…")
+        self.write_btn.setToolTip(self.act_write.statusTip())
+        self.write_btn.clicked.connect(self.write_to_disk)
         row.addWidget(self.parent_btn)
         row.addWidget(self.repair_btn)
+        row.addWidget(self.write_btn)
         row.addStretch(1)
         body.addLayout(row)
         card.add(self.img_body)
@@ -858,7 +868,7 @@ class MainWindow(QMainWindow):
         self.img_badge.setVisible(item is not None)
         if item is None:
             return
-        self.img_name.setText(info.name if info is not None else item.name)
+        self.img_name.setText(breakable(info.name if info is not None else item.name))
         if info is None:
             self.img_sub.setText("Reading…" if item.state == INSPECTING else item.message)
             set_badge(self.img_badge, "READING" if item.state == INSPECTING else "ERROR",
@@ -870,6 +880,7 @@ class MainWindow(QMainWindow):
             self.img_banner.hide()
             self.parent_btn.hide()
             self.repair_btn.hide()
+            self.write_btn.hide()
             return
         fmt = info.format
         self.img_sub.setText(info.label if fmt else "Not a disk image")
@@ -915,6 +926,7 @@ class MainWindow(QMainWindow):
         self.parent_btn.setVisible(info.differencing and (not info.chain or bool(problems))
                                    and item.editable and not info.member)
         self.repair_btn.setVisible(info.dirty and item.editable and not info.member)
+        self.write_btn.setVisible(info.ok and fmt is not None and not fmt.container)
 
     def _show_target(self, item: Item | None) -> None:
         self._updating_controls = True
@@ -1072,6 +1084,8 @@ class MainWindow(QMainWindow):
         self.act_repair.setEnabled(bool(info and info.dirty and cur.editable and not info.member) and not busy)
         self.act_cancel.setEnabled(busy)
         self.act_add.setEnabled(True)
+        self.act_write.setEnabled(not busy and self.qemu is not None)
+        self.write_btn.setEnabled(not busy and self.qemu is not None)
 
     def remove_selected(self) -> None:
         items = [i for i in self.selected_items() if i.state not in (RUNNING, WAITING)]
@@ -1193,7 +1207,7 @@ class MainWindow(QMainWindow):
             self.table.selectRow(index.row())
         menu = QMenu(self)
         for act in (self.act_convert, None, self.act_folder, self.act_copy_path, None,
-                    self.act_parent, self.act_repair, None, self.act_remove, self.act_clear):
+                    self.act_write, self.act_parent, self.act_repair, None, self.act_remove, self.act_clear):
             if act is None:
                 menu.addSeparator()
             elif act.isEnabled():
@@ -1434,6 +1448,59 @@ class MainWindow(QMainWindow):
             dialog.deleteLater()
         if path:
             self.add_files([path])
+
+    # ------------------------------------------------------------------ writing onto a physical disk
+
+    def write_to_disk(self) -> None:
+        """Put the selected image (or one chosen in the dialog) onto a physical disk."""
+        if self.qemu is None:
+            self.offer_qemu_install()
+            return
+        if self.runner.busy:
+            self.toast.show_message(f"Wait until {self.runner.name} has finished", "warning")
+            return
+        item = self.current_item()
+        usable = item is not None and item.info is not None and item.info.format is not None
+        dialog = WriteDiskDialog(self, self.qemu, self.settings, item.source if usable else None,
+                                 item.info if usable else None, item.member if usable else None,
+                                 item.parents if usable else None, item.force_parent if usable else False,
+                                 image_filter=IMAGE_FILTER)
+        try:
+            job = dialog.job if dialog.exec() else None
+        finally:
+            dialog.deleteLater()
+        if job is None:
+            return
+        qemu, log = self.qemu, self.logLine.emit
+
+        def work(progress, cancel):
+            plan = make_write_plan(job, qemu)     # look again: the disk may have been unplugged or mounted
+            if not plan.ok:
+                raise ConvertError(plan.errors[0])
+            return write_to_disk(plan, qemu, progress, cancel, log=lambda m: log(m, "detail"))
+
+        self.log(f"Writing {job.source.name}{f' › {job.member}' if job.member else ''} onto {job.disk}")
+        self._start(f"Writing to {job.disk.name}", work, self._disk_written,
+                    on_error=lambda exc: self._write_failed(job, exc))
+
+    def _disk_written(self, outcome) -> None:
+        check = ", read back and identical" if outcome.verified else ""
+        self.log(f"Wrote {human_bytes(outcome.size)} onto {outcome.title}{check} ({mmss(outcome.seconds)}).",
+                 "success")
+        if outcome.fitted:
+            self.log("The partition table was fitted to the disk's size.", "detail")
+        self.toast.show_message(f"{outcome.title} is ready" + (" and verified" if outcome.verified else ""),
+                                "success")
+
+    def _write_failed(self, job, exc: BaseException) -> None:
+        if isinstance(exc, OperationCancelled):
+            self.log(f"Stopped: {job.disk} is only partly written. Write it again, or format it.", "warning")
+            self.toast.show_message("Stopped", "warning")
+        elif isinstance(exc, VerifyError):
+            self.log(str(exc), "error")
+            QMessageBox.critical(self, "The disk is different", str(exc))
+        else:
+            self._on_error(exc)
 
     def _disk_created(self, outcome) -> None:
         check = ", checked" if outcome.verified else ""

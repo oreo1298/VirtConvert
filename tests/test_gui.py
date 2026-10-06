@@ -475,3 +475,79 @@ def test_save_dialog_consent_is_for_its_own_file(window, images, monkeypatch):
     window.choose_output()
     item = window.model.items[0]
     assert item.output == images / "taken.vhdx" and not item.overwrite and item.state == mw.BLOCKED
+
+
+def test_write_to_a_disk(window, qemu, images, fake_disk, monkeypatch):
+    from virtconvert.gui import write_dialog
+
+    data = bytearray(8 * MIB)
+    for at, chunk in gpt_sectors(8 * MIB, [(2048, 12000, "0fc63daf-8483-4772-8e79-3d69d8477de4", "Data")]).items():
+        data[at:at + len(chunk)] = chunk
+    data[3 * MIB:4 * MIB] = os.urandom(MIB)
+    raw = images / "Stick.img"
+    raw.write_bytes(bytes(data))
+    system = fake_disk(64 * MIB, "sda", mountpoints=["/"], removable=False, model="System SSD")
+    stick = fake_disk(16 * MIB, "sdb")
+    add(window, raw)
+    window.table.selectRow(0)
+    pump()
+    assert window.write_btn.isVisibleTo(window) and window.act_write.isEnabled()
+
+    answers = []
+
+    def answer(*_args, **kw):
+        answers.append(kw["informative"])
+        return len(answers) > 1             # no the first time, yes the second
+
+    monkeypatch.setattr(write_dialog, "ask_yes_no", answer)
+
+    def fill_in(dialog):
+        box = dialog.chooser.box
+        assert box.currentData() == stick.path                   # a USB stick first, not the system's disk
+        assert "the running system" in box.itemText(box.findData(system.path))
+        box.setCurrentIndex(box.findData(system.path))
+        dialog._replan()
+        assert not dialog.write_btn.isEnabled() and "running system" in dialog.banner.text()
+        box.setCurrentIndex(box.findData(stick.path))
+        dialog._replan()
+        assert dialog.write_btn.isEnabled() and "Stick.img" in dialog.source_label.text().replace("​", "")
+        dialog._write()                     # the first answer is no: nothing happens
+        assert dialog.job is None and not dialog.result()
+        dialog._write()
+        return dialog.result()
+
+    monkeypatch.setattr(write_dialog.WriteDiskDialog, "exec", fill_in)
+    window.write_to_disk()
+    wait_for(lambda: not window.runner.busy)
+    assert "On it now: no partitions" in answers[0]
+    got = Path(stick.path).read_bytes()
+    assert got[3 * MIB:4 * MIB] == data[3 * MIB:4 * MIB] and got[-MIB:-33 * SECTOR] == bytes(MIB - 33 * SECTOR)
+    assert Path(system.path).read_bytes() == b"\xee" * (64 * MIB)
+    assert "read back and identical" in window.log_view.toPlainText()
+    assert window.settings.value("write/verify", type=bool) is True
+
+
+def test_write_dialog_chooses_a_disk_of_an_appliance(window, qemu, tmp_path, fake_disk, monkeypatch):
+    from imagewriter import write_vhd
+    from test_formats import descriptor, make_ova
+
+    from virtconvert.gui import write_dialog
+
+    write_vhd(tmp_path / "a.vhd", 2 * MIB, {})
+    write_vhd(tmp_path / "b.vhd", 3 * MIB, {})
+    make_ova(tmp_path / "app.ova", {n: (tmp_path / n).read_bytes() for n in ("a.vhd", "b.vhd")},
+             descriptor(("a.vhd", 2), ("b.vhd", 3)))
+    fake_disk(8 * MIB)
+    dialog = write_dialog.WriteDiskDialog(window, qemu, window.settings)
+    dialog._replan()
+    assert not dialog.write_btn.isEnabled() and "Choose the virtual disk" in dialog.banner.text()
+    monkeypatch.setattr(write_dialog.QFileDialog, "getOpenFileName",
+                        staticmethod(lambda *a, **k: (str(tmp_path / "app.ova"), "")))
+    asked = []
+    monkeypatch.setattr(write_dialog.QInputDialog, "getItem",
+                        staticmethod(lambda _p, _t, _l, items, *a: asked.append(items) or ("b.vhd", True)))
+    dialog._choose_source()
+    assert asked == [["a.vhd", "b.vhd"]] and dialog.member == "b.vhd" and dialog.info.virtual_size == 3 * MIB
+    dialog._replan()
+    assert dialog.write_btn.isEnabled(), dialog.banner.text()
+    dialog.deleteLater()

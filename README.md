@@ -3,7 +3,8 @@
 VirtConvert&Create converts virtual disks between **VirtualBox, Hyper-V, VMware and QEMU/KVM** (VDI,
 VMDK, VHD, VHDX, QCOW2, QED, OVA appliances and raw images) and **creates new disks**: empty, with
 a partition already formatted as NTFS, exFAT, FAT32, ext4, Btrfs or XFS, or as a **copy of a
-physical disk** (a hard disk, an SSD, a USB stick or a memory card) to run in a virtual machine. It is made for Arch
+physical disk** (a hard disk, an SSD, a USB stick or a memory card) to run in a virtual machine. And
+it **writes virtual disks onto physical ones**, so a real computer starts from them. It is made for Arch
 Linux and installs just as easily on Debian, Ubuntu, Fedora, openSUSE and the other popular
 distributions. There is a desktop app in the style of [EZP2019Linux](https://github.com/oreo1298/EZP2019Linux)
 and a command line for scripts.
@@ -26,6 +27,11 @@ the other formats; see [Updating from VirtConvert 1.0](#updating-from-virtconver
 - **Physical disks into virtual ones**: copy one of the computer's disks, or a USB stick or memory
   card, into any of those formats, to run it in a virtual machine or keep it as an image. The
   disk is only read; you're asked for your password to read it, and nothing else runs as root.
+- **Virtual disks onto physical ones**: write any image (every format above, ISO files, the disk in
+  an OVA, checkpoints merged with their parents) onto a USB stick, a memory card, an SSD or a hard
+  disk, so a computer starts from it. You confirm before the disk is erased, the disk is read back
+  and compared afterwards, and the partition table is fitted to the disk: a larger disk keeps the
+  rest free, a smaller one works when the partitions fit.
 - **Appliances**: the disks inside an OVA are read in place (an OVA with several disks shows one
   entry per disk), and converting to **OVA** packs the disk with a small machine description for
   **File → Import Appliance** in VirtualBox and VMware.
@@ -43,8 +49,8 @@ the other formats; see [Updating from VirtConvert 1.0](#updating-from-virtconver
   VHD files (fixed, rounded up to whole megabytes).
 - **Several images at once**: a list you can fill by drag and drop, converted one after the other
   with progress, speed and time left, and **Cancel**.
-- **Command line**: `virtconvert info`, `convert`, `create`, `disks`, `verify`, `repair`, `formats` and
-  `doctor`.
+- **Command line**: `virtconvert info`, `convert`, `create`, `write`, `disks`, `verify`, `repair`,
+  `formats` and `doctor`.
 - Dark and light themes that follow the desktop setting.
 
 VirtConvert&Create also fixes problems you would hit with `qemu-img` alone:
@@ -60,9 +66,9 @@ VirtConvert&Create also fixes problems you would hit with `qemu-img` alone:
 |---|---|
 | ![New disk](docs/screenshots/create-dark.png) | ![Copy of a physical disk](docs/screenshots/physical-dark.png) |
 
-| An appliance going to QEMU/KVM | The empty window (light theme) |
+| Writing onto a USB stick (light theme) | An appliance going to QEMU/KVM |
 |---|---|
-| ![Appliance](docs/screenshots/appliance-dark.png) | ![Empty window](docs/screenshots/empty-light.png) |
+| ![Write to disk](docs/screenshots/write-light.png) | ![Appliance](docs/screenshots/appliance-dark.png) |
 
 | Going back to Hyper-V (light theme) | Converting |
 |---|---|
@@ -192,7 +198,7 @@ virtconvert doctor
 ```
 
 ```
-VirtConvert&Create 1.1.0 on Ubuntu 24.04.5 LTS
+VirtConvert&Create 1.2.0 on Ubuntu 24.04.5 LTS
   ✓ Python             3.12.3
   ✓ qemu-img           8.2.2 (/usr/bin/qemu-img)
   ✓ PySide6 (the app)  6.11.2
@@ -228,11 +234,15 @@ then **Empty**, **Partitioned** or **Formatted** (with the file system and a nam
 save it. The box at the bottom says what you will get, or what's missing. To copy a physical disk
 instead, pick **Copy of a physical disk** at the top (see [below](#copying-a-physical-disk)).
 
+To put a virtual disk onto a USB stick, a memory card or another disk, select it and click **Write
+to disk…** (see [below](#writing-a-virtual-disk-onto-a-physical-disk)).
+
 | Action | Shortcut |
 |---|---|
 | Add images | <kbd>Ctrl</kbd>+<kbd>O</kbd> |
 | New disk | <kbd>Ctrl</kbd>+<kbd>N</kbd> |
 | Add a physical disk to the list | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> |
+| Write to a physical disk | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>W</kbd> |
 | Convert | <kbd>F5</kbd> |
 | Cancel | <kbd>Esc</kbd> |
 | Remove from the list | <kbd>Del</kbd> |
@@ -341,6 +351,48 @@ Things to know:
 - **A failing disk**: if it has unreadable sectors, the copy stops at the first one and says where.
   Rescue it with `ddrescue` into an image file first, then convert that image.
 
+## Writing a virtual disk onto a physical disk
+
+The other way round: VirtConvert&Create puts a virtual disk onto one of the computer's disks, so a
+real computer starts from it: to move a system out of a virtual machine onto real hardware, to
+prepare a USB stick or a memory card (a bootable ISO, a Raspberry Pi image), or to restore a disk
+from an image. Everything it reads can be written: VDI, VMDK, VHD, VHDX, QCOW2, QED, raw and ISO
+images, the disk inside an OVA, checkpoints and snapshots (merged with their parents), and even
+another physical disk (a disk-to-disk copy).
+
+- In the app: select the image and click **Write to disk…** (in the Image box, the Images menu or
+  the list's right-click menu; <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>W</kbd>). Pick the disk, read
+  what the box under it says, click **Write…** and confirm erasing the disk.
+- On the command line: `virtconvert disks` lists the disks, then `virtconvert write vm.vhdx /dev/sdb`.
+  It asks you to type the disk's name to confirm (`--yes` skips that, for scripts).
+
+**Everything on the chosen disk is erased.** VirtConvert&Create won't write onto the disk the running
+system is on, a disk used by LVM, RAID or an unlocked encrypted volume, a write-protected card, or
+the disk the image itself is stored on. File systems mounted from the disk are unmounted first, the
+way the file manager does it. You're asked for your password to open the disk; as when copying a
+disk, only a few lines run as root, and the writing runs as you.
+
+Things to know:
+
+- **Everything is written**, the empty parts as zeros too, so nothing of the old contents shows
+  through. Then the disk is read back and compared with the image (untick *Read the disk back*, or
+  `--no-verify`, to skip that).
+- **A larger disk**: the rest stays unused. The partition table is fitted to the disk (a GPT's backup
+  copy moves to the end of the disk, where it belongs), so GParted or Windows' Disk Management can
+  enlarge the last partition into the free space.
+- **A smaller disk** works when the partitions fit: the part of the image up to the disk's end is
+  written (the end of a virtual disk is often unused space). If they don't fit, shrink the last
+  partition inside the virtual machine first (GParted, or *Shrink volume* in Windows' Disk
+  Management), then write again.
+- **Starting it**: the box says whether the system starts with UEFI or BIOS (legacy boot); set the
+  computer's firmware to match. Windows moved from a virtual machine to a real computer may need
+  drivers for its disk controller (it stops at `INACCESSIBLE_BOOT_DEVICE` without them) and may ask
+  to be activated again. Linux usually just starts.
+- **Cancelling** stops right away, but leaves the disk partly written: write it again, or format it.
+- **Disks with 4 KB sectors** (some NVMe SSDs and USB disks) can't use a partition table made for
+  512-byte sectors, which is what virtual disks have; VirtConvert&Create says so instead of writing a
+  disk that wouldn't start.
+
 ## Command line
 
 Running `virtconvert` without a command opens the app (`virtconvert disk.vhdx` opens it with the
@@ -370,6 +422,8 @@ virtconvert create linux -t qcow2 -s 200G --fs ext4      # -> linux.qcow2
 virtconvert disks                                        # the physical disks
 virtconvert create old-pc.vdi --from /dev/sdb            # a copy of one (asks for your password)
 virtconvert convert /dev/sdc -t vhdx                     # the same through convert
+virtconvert write vm.vhdx /dev/sdb                       # a virtual disk onto a physical one (erases it)
+virtconvert write ubuntu.iso /dev/sdc --yes              # an ISO onto a USB stick, without asking
 
 virtconvert verify disk.vhdx disk.vdi       # do two images contain the same disk?
 virtconvert repair disk.vhdx                # apply the log of a VHDX that wasn't closed cleanly
@@ -385,8 +439,12 @@ checkpoint's parent is, if it isn't found) and `-y` (don't ask about warnings).
 Options for `create`: `-s/--size` (`64G`, `512M`, `2T`; a plain number is megabytes), `-t/--to`
 (else the file name's extension decides), `--fixed`, `--split`, `--table gpt|mbr|none`,
 `--fs ntfs|exfat|fat32|ext4|btrfs|xfs` (implies `--table gpt`), `-L/--label`, `--from DISK` (a copy
-of a physical disk instead), `--overwrite`, `--no-verify`. Exit status: 0 done, 1 failed, 130
-cancelled.
+of a physical disk instead), `--overwrite`, `--no-verify`.
+
+Options for `write`: `--no-verify` (don't read the disk back), `--member NAME` (the disk of an OVA
+with several), `--parent FILE`, `-y/--yes` (don't ask before erasing the disk), `-q/--quiet`.
+
+Exit status: 0 done, 1 failed, 130 cancelled.
 
 ## Formats
 
@@ -416,12 +474,20 @@ qemu-img's DMG modules (a separate package on some distributions).
   qemu-img box in the toolbar.
 - **"Making NTFS needs mkntfs, which isn't installed"**: install the package the message names
   (also shown by `virtconvert doctor`), then try again.
-- **Copying a disk: "needs administrator rights, and they weren't given"**: the password dialog
-  was cancelled, or your account isn't an administrator. The app uses `pkexec` (package `polkit`,
-  installed on every desktop); without it, run `sudo virtconvert create … --from /dev/sdX` in a
-  terminal.
+- **Copying or writing a disk: "needs administrator rights, and they weren't given"**: the
+  password dialog was cancelled, or your account isn't an administrator. The app uses `pkexec`
+  (package `polkit`, installed on every desktop); without it, use the command line in a terminal
+  (`virtconvert create … --from /dev/sdX`, `virtconvert write … /dev/sdX`), which asks with `sudo`.
 - **Copying a disk: "can't be read at … (input/output error)"**: the disk has a damaged sector.
   Rescue it with `ddrescue /dev/sdX rescued.img rescued.map`, then convert `rescued.img`.
+- **Writing to a disk: "is in use"**: something on the disk is still mounted or open (a terminal
+  in one of its folders, swap, LVM, RAID, an unlocked encrypted volume). Close it, unmount or lock
+  it, and try again.
+- **Writing to a disk: "doesn't hold what was written"**: the disk didn't keep what was written to
+  it. It is failing, or it is a counterfeit USB stick that claims more space than it has (check it
+  with `f3probe`). Use another disk.
+- **Writing to a disk: "is too small"**: shrink the partitions inside the virtual machine so they
+  end before the disk's size, then write again.
 - **"The parent of … was not found"**: a checkpoint or snapshot needs the files it is based on.
   Put them in the same folder (Hyper-V keeps them in *Virtual Hard Disks*, VirtualBox in the VM's
   folder and its *Snapshots* folder), or use **Choose parent…** (`--parent` on the command line).
@@ -462,7 +528,9 @@ the copy against the source.
 
 A physical disk is opened read-only by a few lines of Python run with `pkexec` or `sudo`, which
 hand the open disk back over a Unix socket; VirtConvert&Create then serves it to qemu-img through
-the same NBD server, as itself.
+the same NBD server, as itself. Writing onto a disk goes the other way: the helper opens the disk
+for writing, exclusively (the kernel refuses that while anything on it is mounted, and keeps it from
+being mounted meanwhile), and qemu-img writes the image into it through the NBD server, now writable.
 
 A new disk is put together as a sparse file: the partition table is written into it, the mkfs
 program formats a sparse file the size of the partition, and the parts it wrote are copied in.

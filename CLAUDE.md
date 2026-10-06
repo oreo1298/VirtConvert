@@ -1,8 +1,8 @@
 # VirtConvert&Create — repository notes for Claude
 
 Converts virtual disks (VDI, VMDK, VHD, VHDX, QCOW2, QED, OVA, raw; reads Parallels, DMG, ISO, QCOW, OVF too;
-checkpoints merged) and creates new ones (empty, partitioned, or formatted with mkfs): the `virtconvert` command
-(no arguments → the PySide6 app). Called VirtConvert in 1.0; a 1.1 build was briefly misspelt VertConvert&Create
+checkpoints merged), creates new ones (empty, partitioned, formatted with mkfs, or copied from a physical disk) and
+writes them onto physical disks: the `virtconvert` command (no arguments → the PySide6 app). Called VirtConvert in 1.0; a 1.1 build was briefly misspelt VertConvert&Create
 (command `vertconvert`): installers, PKGBUILD and settings clean that one up.
 Python ≥ 3.10. qemu-img does the copying; VirtConvert&Create reads headers, merges differencing chains, builds new
 disks and checks results. Primary target Arch Linux (PKGBUILD); `packaging/install.sh` covers the other
@@ -21,18 +21,24 @@ distributions. Design notes: docs/HOW-IT-WORKS.md.
   `verify_images`, `repair`), `create.py` (`FILESYSTEMS`, `NewDisk`, `make_create_plan`, `create_disk`),
   `system.py` (doctor, distro package names for qemu-img and the mkfs tools, `find_program` incl. sbin),
   `devices.py` (physical disks: `list_disks` from lsblk, `inspect_device` → `ImageInfo.device`, `open_device`
-  with the pkexec/sudo fd-passing helper, `DeviceReader`, `disks_holding`).
+  with the pkexec/sudo fd-passing helper (read-only, or `write=True`: O_RDWR|O_EXCL), `DeviceReader`,
+  `DeviceWriter`, `disks_holding`, `unmount`), `writedisk.py` (`DiskWrite`, `make_write_plan`, `write_to_disk`:
+  an image onto a physical disk through the writable NBD server, verify, `partitions.move_backup_gpt`).
 - `virtconvert/gui/` — PySide6. `main_window.py` (toolbar, Image / Convert to / Options cards, queue table,
   Activity log, status bar), `pickers.py` (`TargetPicker`: 2×4 format grid + variants, used by both windows),
-  `create_dialog.py` (New disk), `queue.py` (`Item` incl. `member`, `QueueModel`, `StatusDelegate`),
+  `create_dialog.py` (New disk, `DiskChooser`), `write_dialog.py` (Write to disk), `queue.py` (`Item` incl. `member`, `QueueModel`, `StatusDelegate`),
   `dialogs.py`; `theme.py`, `icons.py`, `widgets.py`, `worker.py` are the suite's shared design system
   (EZP2019Linux).
-- `virtconvert/cli.py` — sub-commands info/convert/create/disks/verify/repair/formats/doctor.
+- `virtconvert/cli.py` — sub-commands info/convert/create/write/disks/verify/repair/formats/doctor.
 - `tests/imagewriter.py` writes test images from the specs; `tools/screenshot.py` makes docs/screenshots;
   `tools/installer-smoke.sh` is the per-distro installer test CI runs in containers.
 
 ## Invariants / gotchas
 - Never write to a source. The only exception is `repair()` (explicit, confirmed by the user).
+- The only writes to a physical disk are `write_to_disk` after the person confirmed erasing that disk (the app:
+  `ask_yes_no` with Cancel as default; the CLI: typing the disk's name, or `--yes`). `make_write_plan` refuses the
+  system disk, partitions, read-only disks, disks with holders (LVM/RAID/crypt), the disk the image is stored on,
+  and a sector-size mismatch; `DiskWrite.expect` (size, model, serial) catches a different disk under the name.
 - Always pass formats explicitly (`qemu.source_spec`): qemu-img takes fixed VHDs for raw, and sizes VHDs from
   unknown creators by CHS (we force `force_size_calc=current_size`; VHD targets get `force_size=on`).
 - qemu-img silently ignores the parent of a differencing VHD and refuses differencing VHDX/VDI:

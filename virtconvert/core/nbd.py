@@ -1,13 +1,16 @@
-"""A small read-only NBD server on a Unix socket.
+"""A small NBD server on a Unix socket.
 
 qemu-img can read from an NBD server like from a file. VirtConvert&Create uses this
-to give qemu-img a merged view of a differencing chain (see chain.py): qemu-img
-reads the disk through this server and writes the target format itself, so no
-temporary copy of the disk is needed.
+to give qemu-img a merged view of a differencing chain (see chain.py) or a physical
+disk opened by the root helper (devices.py): qemu-img reads the disk through this
+server and writes the target format itself, so no temporary copy is needed.
+Writing a virtual disk onto a physical one goes the other way: the server is
+writable and qemu-img writes the disk's contents into it (writedisk.py).
 
 Implements the fixed newstyle handshake (NBD_OPT_GO / NBD_OPT_INFO /
-NBD_OPT_EXPORT_NAME) and NBD_CMD_READ / NBD_CMD_DISC with simple replies.
-Other options are refused with NBD_REP_ERR_UNSUP, which clients handle.
+NBD_OPT_EXPORT_NAME) and NBD_CMD_READ / NBD_CMD_DISC with simple replies; a writable
+export adds NBD_CMD_WRITE, NBD_CMD_WRITE_ZEROES and NBD_CMD_FLUSH. Other options are
+refused with NBD_REP_ERR_UNSUP, which clients handle.
 """
 
 from __future__ import annotations
@@ -31,6 +34,8 @@ FLAG_FIXED_NEWSTYLE = 1
 FLAG_NO_ZEROES = 2
 FLAG_HAS_FLAGS = 1
 FLAG_READ_ONLY = 2
+FLAG_SEND_FLUSH = 1 << 2
+FLAG_SEND_WRITE_ZEROES = 1 << 6
 FLAG_CAN_MULTI_CONN = 1 << 8
 
 OPT_EXPORT_NAME, OPT_ABORT, OPT_LIST, OPT_INFO, OPT_GO = 1, 2, 3, 6, 7
@@ -40,7 +45,7 @@ REP_ERR_INVALID = (1 << 31) + 3
 REP_ERR_UNKNOWN = (1 << 31) + 6
 INFO_EXPORT, INFO_BLOCK_SIZE = 0, 3
 
-CMD_READ, CMD_DISC, CMD_FLUSH, CMD_CACHE = 0, 2, 3, 5
+CMD_READ, CMD_WRITE, CMD_DISC, CMD_FLUSH, CMD_CACHE, CMD_WRITE_ZEROES = 0, 1, 2, 3, 5, 6
 MAX_REQUEST = 32 << 20
 PREFERRED_BLOCK = 2 << 20
 
@@ -49,6 +54,16 @@ class Source(Protocol):
     size: int
 
     def read(self, offset: int, length: int) -> bytes: ...
+
+
+class Target(Source, Protocol):
+    """What a writable export needs."""
+
+    def write(self, offset: int, data: bytes) -> None: ...
+
+    def zero(self, offset: int, length: int) -> None: ...
+
+    def flush(self) -> None: ...
 
 
 def _socket_parent() -> str:
@@ -70,11 +85,13 @@ def _recv(sock: socket.socket, n: int) -> bytes:
 
 
 class NbdServer:
-    """Serves SOURCE read-only. Use as a context manager; `url` is for qemu-img."""
+    """Serves SOURCE, read-only unless WRITABLE (then SOURCE is a Target). Use as a context
+    manager; `url` is for qemu-img."""
 
-    def __init__(self, source: Source, export: str = "virtconvert"):
+    def __init__(self, source: Source, export: str = "virtconvert", writable: bool = False):
         self.source = source
         self.export = export
+        self.writable = writable
         self.error: BaseException | None = None
         self._dir = tempfile.mkdtemp(prefix="vc-", dir=_socket_parent())
         self.socket_path = os.path.join(self._dir, "nbd.sock")
@@ -157,6 +174,8 @@ class NbdServer:
                 self._clients.remove(sock)
 
     def _transmission_flags(self) -> int:
+        if self.writable:
+            return FLAG_HAS_FLAGS | FLAG_SEND_FLUSH | FLAG_SEND_WRITE_ZEROES
         return FLAG_HAS_FLAGS | FLAG_READ_ONLY | FLAG_CAN_MULTI_CONN
 
     def _handshake(self, sock: socket.socket) -> bool:
@@ -216,8 +235,47 @@ class NbdServer:
                     sock.sendall(struct.pack(">IIQ", SIMPLE_REPLY_MAGIC, errno.EIO, cookie))
                     continue
                 sock.sendall(struct.pack(">IIQ", SIMPLE_REPLY_MAGIC, 0, cookie) + data)
+            elif cmd == CMD_WRITE:
+                if length > MAX_REQUEST:
+                    _discard(sock, length)
+                    self._simple(sock, cookie, errno.EINVAL)
+                    continue
+                data = _recv(sock, length)
+                if not self.writable:
+                    self._simple(sock, cookie, errno.EPERM)
+                elif offset + length > size:
+                    self._simple(sock, cookie, errno.ENOSPC)
+                else:
+                    self._simple(sock, cookie, self._call(self.source.write, offset, data))
+            elif cmd == CMD_WRITE_ZEROES:
+                if not self.writable:
+                    self._simple(sock, cookie, errno.EPERM)
+                elif offset + length > size:
+                    self._simple(sock, cookie, errno.ENOSPC)
+                else:
+                    self._simple(sock, cookie, self._call(self.source.zero, offset, length))
+            elif cmd == CMD_FLUSH and self.writable:
+                self._simple(sock, cookie, self._call(self.source.flush))
             elif cmd in (CMD_FLUSH, CMD_CACHE):
-                sock.sendall(struct.pack(">IIQ", SIMPLE_REPLY_MAGIC, 0, cookie))
+                self._simple(sock, cookie, 0)
             else:
-                # writes and anything else on a read-only export
-                sock.sendall(struct.pack(">IIQ", SIMPLE_REPLY_MAGIC, errno.EPERM, cookie))
+                self._simple(sock, cookie, errno.EINVAL)
+
+    @staticmethod
+    def _simple(sock: socket.socket, cookie: int, error: int) -> None:
+        sock.sendall(struct.pack(">IIQ", SIMPLE_REPLY_MAGIC, error, cookie))
+
+    def _call(self, method, *args) -> int:
+        """Run a write, zero or flush of the target: 0, or the error for the client (the reason is
+        kept for whoever runs qemu-img)."""
+        try:
+            method(*args)
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            self.error = exc
+            return errno.EIO
+
+
+def _discard(sock: socket.socket, n: int) -> None:
+    while n > 0:
+        n -= len(_recv(sock, min(n, 1 << 20)))

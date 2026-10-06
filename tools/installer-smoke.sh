@@ -44,6 +44,10 @@ for fs in fat32 ntfs exfat; do
   virtconvert create -q "/tmp/$fs.vmdk" -s 256M --fs "$fs" || echo "(no $fs here)"
 done
 
+echo "== writing onto a disk (refused for a folder: no disk to spare in a container)"
+if virtconvert write -y disk.vhdx /tmp > write.out 2>&1; then cat write.out; exit 1; fi
+grep -q "is not a disk" write.out
+
 echo "== the app loads"
 if [ "${REQUIRE_GUI:-1}" = 1 ]; then
   QT_QPA_PLATFORM=offscreen /opt/virtconvert/venv/bin/python -c \

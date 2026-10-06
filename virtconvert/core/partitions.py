@@ -2,7 +2,9 @@
 
 Reading tells whether the guest boots with UEFI (GPT) or BIOS (MBR), which
 decides "Enable EFI" in VirtualBox and the generation of a Hyper-V VM.
-Writing makes the GPT or MBR of a new disk (create.py).
+Writing makes the GPT or MBR of a new disk (create.py), and moves a GPT's
+backup to the end of a physical disk of another size than the virtual disk
+written onto it (writedisk.py).
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import struct
 import uuid
 import zlib
 from dataclasses import dataclass, field
+from typing import Callable
 
 BASIC_DATA = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7"
 LINUX_DATA = "0fc63daf-8483-4772-8e79-3d69d8477de4"
@@ -241,3 +244,73 @@ def mbr_table(partitions: list[tuple[int, int, int]], signature: bool = True) ->
                          first, count)
     mbr[510:512] = b"\x55\xaa"
     return {0: bytes(mbr)}
+
+
+def gpt_room(sector: int, entries: int = GPT_ENTRIES) -> int:
+    """The bytes a GPT needs after the last partition: its backup entries and header."""
+    return -(-entries * 128 // sector) * sector + sector
+
+
+def move_backup_gpt(read: Callable[[int, int], bytes], write: Callable[[int, bytes], None], disk_size: int,
+                    sector: int) -> bool:
+    """Fit the GPT at the start of a disk to the disk's size, the way `sgdisk -e` does: the backup
+    entries and header go to its last sectors, the last usable sector before them, and the
+    protective MBR covers the whole disk. Needed after writing a virtual disk onto a disk of
+    another size (Linux ignores a GPT whose partitions may lie beyond the disk's end).
+
+    READ(offset, length) and WRITE(offset, data) work on the disk. False when there is nothing
+    to do, or no valid GPT."""
+    primary = bytearray(read(sector, sector))
+    if len(primary) < 92 or primary[:8] != b"EFI PART":
+        return False
+    header_size, = struct.unpack_from("<I", primary, 12)
+    if not 92 <= header_size <= sector:
+        return False
+    stored_crc, = struct.unpack_from("<I", primary, 16)
+    if zlib.crc32(bytes(primary[:16]) + b"\0\0\0\0" + bytes(primary[20:header_size])) != stored_crc:
+        return False
+    current, old_backup, _first, last_usable = struct.unpack_from("<QQQQ", primary, 24)
+    entries_lba, count, entry_size, entries_crc = struct.unpack_from("<QIII", primary, 72)
+    if current != 1 or entry_size < 128 or not 0 < count * entry_size <= (1 << 20):
+        return False
+    entries = read(entries_lba * sector, count * entry_size)
+    if len(entries) != count * entry_size or zlib.crc32(entries) != entries_crc:
+        return False
+    lbas = disk_size // sector
+    backup = lbas - 1
+    backup_entries = backup - -(-count * entry_size // sector)
+    new_last_usable = backup_entries - 1
+    used = [struct.unpack_from("<Q", entries, i * entry_size + 40)[0] for i in range(count)
+            if any(entries[i * entry_size:i * entry_size + 16])]
+    if max(used, default=0) > new_last_usable or backup_entries <= entries_lba:
+        return False                # the partitions don't fit (writedisk checks that first)
+    if old_backup == backup and last_usable == new_last_usable:
+        return False
+
+    def header(this: int, other: int, at: int) -> bytes:
+        h = bytearray(primary)
+        struct.pack_into("<QQ", h, 24, this, other)
+        struct.pack_into("<Q", h, 48, new_last_usable)
+        struct.pack_into("<Q", h, 72, at)
+        struct.pack_into("<I", h, 16, 0)
+        struct.pack_into("<I", h, 16, zlib.crc32(bytes(h[:header_size])))
+        return bytes(h)
+
+    write(backup_entries * sector, bytes(entries))
+    write(backup * sector, header(backup, 1, backup_entries))
+    write(sector, header(1, backup, entries_lba))
+    # the old backup header is now somewhere in the middle of a larger disk: remove it, so
+    # partition recovery tools don't take it for a table
+    if old_backup < backup_entries and old_backup > entries_lba and read(old_backup * sector, 8) == b"EFI PART":
+        write(old_backup * sector, bytes(sector))
+    # a protective MBR (one partition of type EE from sector 1) spans the whole disk
+    mbr = bytearray(read(0, 512))
+    if len(mbr) == 512 and mbr[510:512] == b"\x55\xaa":
+        slots = [mbr[446 + 16 * i:462 + 16 * i] for i in range(4)]
+        used_slots = [i for i, e in enumerate(slots) if e[4] != 0]
+        if len(used_slots) == 1 and slots[used_slots[0]][4] == 0xEE:
+            at = 446 + 16 * used_slots[0]
+            if struct.unpack_from("<I", mbr, at + 8)[0] == 1:
+                struct.pack_into("<I", mbr, at + 12, min(lbas - 1, 0xFFFFFFFF))
+                write(0, bytes(mbr))
+    return True

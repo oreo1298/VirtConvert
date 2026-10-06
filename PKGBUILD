@@ -11,7 +11,7 @@
 # Uninstall:  sudo pacman -Rns virtconvert
 
 pkgname=virtconvert
-pkgver=1.1.0
+pkgver=1.2.0
 pkgrel=1
 pkgdesc="Convert and create virtual disks: VDI, VMDK, VHD, VHDX, QCOW2, OVA and more, checkpoints included"
 arch=('any')
@@ -21,7 +21,8 @@ depends=('python' 'pyside6' 'qt6-svg' 'qt6-wayland' 'qemu-img')
 makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel')
 checkdepends=('python-pytest')
 optdepends=('virtualbox: run the converted disks'
-            'polkit: copy physical disks from the app (password dialog)'
+            'polkit: read and write physical disks from the app (password dialog)'
+            'udisks2: unmount a USB stick before writing onto it, without a password'
             'dosfstools: new disks formatted with FAT32'
             'exfatprogs: new disks formatted with exFAT'
             'ntfsprogs: new disks formatted with NTFS'

@@ -34,9 +34,10 @@ from .core.images import expand_sources, inspect_image
 from .core.probe import ImageInfo
 from .core.qemu import QemuImg
 from .core.util import human_bytes, mmss
+from .core.writedisk import DiskWrite, disk_identity, make_write_plan, write_to_disk
 
 SPINNER = "|/-\\"
-COMMANDS = ("gui", "info", "convert", "create", "disks", "verify", "repair", "formats", "doctor")
+COMMANDS = ("gui", "info", "convert", "create", "write", "disks", "verify", "repair", "formats", "doctor")
 
 
 class Progress:
@@ -298,6 +299,57 @@ def cmd_disks(args) -> int:
             what = " ".join(x for x in (part.fstype, f"“{part.label}”" if part.label else "") if x)
             print(f"{'':<{width}}    {part.name}: {human_bytes(part.size)}{'  ' + what if what else ''}")
     print("\nCopy one into a virtual disk:  virtconvert create disk.vdi --from /dev/sdX")
+    print("Write a virtual disk onto one:  virtconvert write disk.vdi /dev/sdX   (erases it)")
+    return 0
+
+
+def cmd_write(args) -> int:
+    qemu = _qemu()
+    sources = expand_sources(args.image)
+    if args.member:
+        sources = [s for s in sources if s[1] == args.member] or [(Path(args.image), args.member)]
+    elif len(sources) > 1:
+        raise SystemExit(f"{args.image} holds {len(sources)} disks ({', '.join(m for _p, m in sources)}); "
+                         "choose one with --member.")
+    source, member = sources[0]
+    candidates = [Path(p) for p in args.parent]
+    parents = {source: candidates[0]} if args.force_parent and len(candidates) == 1 else {}
+    job = DiskWrite(source=source, disk=Path(args.disk), verify=not args.no_verify, member=member,
+                    parents=parents, force_parent=args.force_parent, candidates=candidates)
+    plan = make_write_plan(job, qemu)
+    print(plan.summary)
+    _print_messages(plan.errors, plan.warnings, [] if args.quiet else plan.notes)
+    if not plan.ok:
+        return 1
+    disk = plan.disk
+    question = (f"Everything on {disk.title} ({disk.path}, {human_bytes(disk.size)}; now: {plan.erased}) is "
+                "erased.")
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise SystemExit(f"{question} Add --yes to write without asking.")
+        print(f"  {question}")
+        if input(f"  Type the disk's name ({disk.name}) to erase it and write: ").strip() not in (disk.name, disk.path):
+            print("  Nothing was written.")
+            return 1
+        # look again: the disk may have been swapped (or mounted) while the question was open
+        job.expect = disk_identity(disk)
+        plan = make_write_plan(job, qemu, plan.info)
+        if not plan.ok:
+            _print_messages(plan.errors, [], [])
+            return 1
+    progress = Progress(args.quiet)
+    try:
+        outcome = write_to_disk(plan, qemu, progress)
+    except (OperationCancelled, KeyboardInterrupt):
+        progress.finish()
+        print(f"\nStopped. {disk.path} is only partly written: write it again, or format it.", file=sys.stderr)
+        return 130
+    finally:
+        progress.finish()
+    check = ", read back and verified" if outcome.verified else ""
+    print(f"  ✓ {human_bytes(outcome.size)} written to {outcome.title}{check} ({mmss(outcome.seconds)})")
+    if outcome.fitted:
+        print("  · The partition table was fitted to the disk's size.")
     return 0
 
 
@@ -422,7 +474,8 @@ def build_parser() -> argparse.ArgumentParser:
                "  virtconvert create new.vdi -s 50G   an empty 50 GB disk\n"
                "  virtconvert create data.vhdx -s 1T --fs ntfs --label Data\n"
                "  virtconvert disks                    list the physical disks\n"
-               "  virtconvert create pc.vdi --from /dev/sda   a copy of a physical disk\n",
+               "  virtconvert create pc.vdi --from /dev/sda   a copy of a physical disk\n"
+               "  virtconvert write vm.vhdx /dev/sdb   put a virtual disk onto a physical one\n",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"virtconvert {__version__}")
     sub = ap.add_subparsers(dest="command", metavar="COMMAND")
@@ -487,7 +540,27 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-q", "--quiet", action="store_true", help="no progress and notes")
     p.set_defaults(func=cmd_create)
 
-    p = sub.add_parser("disks", help="list the physical disks that can be copied into a virtual disk")
+    p = sub.add_parser("write", help="write a virtual disk onto a physical disk (erases it)",
+                       description="Write a virtual disk onto a physical disk (a USB stick, a memory card, an "
+                                   "SSD, a hard disk), so a computer can start from it. Any format works, "
+                                   "checkpoints included. Everything on the disk is erased; you're asked to "
+                                   "confirm, and for your password to open the disk. Afterwards the disk is "
+                                   "read back and compared with the image. A larger disk keeps the rest "
+                                   "unused; a smaller one works when the partitions fit.")
+    p.add_argument("image", metavar="IMAGE", help="the virtual disk (or an OVA, or another physical disk)")
+    p.add_argument("disk", metavar="DISK", help="the physical disk to overwrite, e.g. /dev/sdb "
+                                                "(see 'virtconvert disks')")
+    p.add_argument("--member", metavar="NAME", help="the disk of an OVA with several")
+    p.add_argument("--no-verify", action="store_true", help="don't read the disk back and compare it")
+    p.add_argument("--parent", action="append", default=[], metavar="FILE",
+                   help="the parent of a checkpoint/snapshot, if it isn't found by itself")
+    p.add_argument("--force-parent", action="store_true",
+                   help="use the --parent file even if its ID doesn't match (risky)")
+    p.add_argument("-y", "--yes", action="store_true", help="erase the disk without asking")
+    p.add_argument("-q", "--quiet", action="store_true", help="no progress and notes")
+    p.set_defaults(func=cmd_write)
+
+    p = sub.add_parser("disks", help="list the physical disks (to copy one, or to write onto one)")
     p.add_argument("--all", action="store_true", help="include loop devices")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.set_defaults(func=cmd_disks)

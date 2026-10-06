@@ -14,9 +14,10 @@ import secrets
 import shutil
 import tarfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 from . import devices, ova
 from . import formats as F
@@ -224,19 +225,33 @@ class Plan:
 
     @property
     def uses_reader(self) -> bool:
-        """VirtConvert&Create reads the source itself: a chain, zeros added at the end, or a VHDX
-        with 4 KB sectors (qemu-img's VHDX driver only handles 512-byte sectors)."""
-        info = self.info
-        if info.device:
-            return True         # a physical disk: read through the helper's file descriptor
-        if info.member:
-            return False        # a disk inside an OVA: qemu-img reads it in place
-        return (info.needs_chain_reader or info.logical_sector != 512
-                or (self.size != info.virtual_size and info.format in LAYERS))
+        return reads_itself(self.info, self.size)
 
     @property
     def grows_without_reader(self) -> bool:
         return self.size != self.info.virtual_size and not self.uses_reader
+
+
+def reads_itself(info: ImageInfo, size: int) -> bool:
+    """VirtConvert&Create reads the source itself (qemu-img reads that through NBD): a physical
+    disk, a chain, zeros added at the end (SIZE beyond the disk's), or a VHDX with 4 KB sectors
+    (qemu-img's VHDX driver only handles 512-byte sectors)."""
+    if info.device:
+        return True         # a physical disk: read through the helper's file descriptor
+    if info.member:
+        return False        # a disk inside an OVA: qemu-img reads it in place
+    return (info.needs_chain_reader or info.logical_sector != 512
+            or (size != info.virtual_size and info.format in LAYERS))
+
+
+def missing_qemu(qemu: QemuImg | None, drivers: list[str]) -> list[str]:
+    """What keeps QEMU from doing the work: not installed, too old, or built without DRIVERS."""
+    if qemu is None:
+        return ["qemu-img is not installed. Run 'virtconvert doctor' to see how to install it."]
+    if qemu.too_old:
+        return [f"qemu-img {qemu.version_text} is too old; version 2.10 or newer is needed."]
+    return [f"The qemu-img on this system was built without the '{driver}' format."
+            for driver in qemu.missing_drivers(tuple(dict.fromkeys(drivers)))]
 
 
 def make_plan(job: Job, qemu: QemuImg | None, info: ImageInfo | None = None) -> Plan:
@@ -269,21 +284,10 @@ def make_plan(job: Job, qemu: QemuImg | None, info: ImageInfo | None = None) -> 
             plan.warnings.append("The disk size is not a multiple of 64 KB; VirtualBox and VMware may "
                                  "not read the last few KB of a stream-optimized VMDK.")
     plan.size = size
-    if qemu is None:
-        plan.errors.append("qemu-img is not installed. Run 'virtconvert doctor' to see how to install it.")
-    else:
-        if qemu.too_old:
-            plan.errors.append(f"qemu-img {qemu.version_text} is too old; version 2.10 or newer is needed.")
-        elif plan.grows_without_reader and qemu.version[:2] < (5, 0):
-            plan.errors.append(f"Making this disk larger needs qemu-img 5.0 or newer (this one is "
-                               f"{qemu.version_text}). Convert it to VDI or VHDX first, then to {target.label}.")
-        needed_drivers = [fmt.driver]
-        if plan.uses_reader:
-            needed_drivers.append("nbd")
-        else:
-            needed_drivers.append(info.format.driver)
-        for driver in qemu.missing_drivers(tuple(dict.fromkeys(needed_drivers))):
-            plan.errors.append(f"The qemu-img on this system was built without the '{driver}' format.")
+    plan.errors += missing_qemu(qemu, [fmt.driver, "nbd" if plan.uses_reader else info.format.driver])
+    if (qemu is not None and not qemu.too_old and plan.grows_without_reader and qemu.version[:2] < (5, 0)):
+        plan.errors.append(f"Making this disk larger needs qemu-img 5.0 or newer (this one is "
+                           f"{qemu.version_text}). Convert it to VDI or VHDX first, then to {target.label}.")
 
     if fmt.max_size and size > fmt.max_size:
         bigger = "VHDX" if fmt is F.VHD else "another format"
@@ -309,7 +313,10 @@ def check_output(plan, out: Path, target: Target, size: int, overwrite: bool, so
     """Problems with writing TARGET as OUT (and the files that go with it) go into PLAN."""
     fmt = target.format
     outputs = target.output_files(out, size)
-    if any(same_file(o, s) for o in outputs for s in sources):
+    if devices.is_device(out):
+        plan.errors.append(f"{out} is a disk, not a file. To write a virtual disk onto a physical one, use "
+                           "Write to disk in the app, or 'virtconvert write'.")
+    elif any(same_file(o, s) for o in outputs for s in sources):
         plan.errors.append("The output would overwrite the source. Choose another name.")
     elif out.exists() and out.is_dir():
         plan.errors.append(f"{out} is a folder.")
@@ -457,37 +464,10 @@ def execute(plan: Plan, qemu: QemuImg, progress: ProgressFn | None = None,
         raise ConvertError(plan.errors[0])
     job, info, target = plan.job, plan.info, plan.job.target
     log = log or (lambda _m: None)
-    watched = [] if info.device else [info.path] + [p.path for p in info.chain] + info.extent_files
-    signatures = {p: file_signature(p) for p in watched}
-    reader: ChainReader | devices.DeviceReader | None = None
-    server: NbdServer | None = None
+    signatures = {p: file_signature(p) for p in source_files(info)}
     work = work_folder(job.output)
-    try:
-        if info.device:
-            # a physical disk: opened read-only (by a helper with administrator rights if needed)
-            # and served to qemu-img through NBD
-            log(f"Opening {info.path} for reading")
-            fd = devices.open_device(info.path, job.elevate, cancel)
-            reader = devices.DeviceReader(fd, plan.size, info.name)
-            server = NbdServer(reader).start()
-            source = nbd_spec(server.socket_path, server.export)
-        elif plan.uses_reader:
-            # VirtConvert&Create reads the source (merging a chain, adding zeros at the end)
-            # and qemu-img reads that through NBD
-            reader = ChainReader.for_image(info, plan.size)
-            server = NbdServer(reader).start()
-            source = nbd_spec(server.socket_path, server.export)
-            if info.chain:
-                log(f"Merging {info.name} with {', '.join(p.name for p in info.chain)} while converting")
-        else:
-            source = image_spec(info)
+    with open_source(info, plan.size, plan.uses_reader, job.elevate, cancel, log) as (source, source_error):
         log(f"qemu-img: {info.label} → {target.label}, {human_bytes(plan.size)}")
-
-        def source_error() -> str | None:
-            if server is not None and server.error is not None:
-                return f"Reading {info.name} failed: {server.error}"
-            return None
-
         appliance = Appliance(ova.appliance_name(info.stem),
                               info.partitions.firmware if info.partitions else "", guess_os(info))
         work.mkdir()        # write_image removes it
@@ -497,8 +477,54 @@ def execute(plan: Plan, qemu: QemuImg, progress: ProgressFn | None = None,
             qemu, source, plan.size, target, job.output, work, verify=job.verify and plan.can_verify,
             overwrite=job.overwrite,
             grow=plan.size != info.virtual_size and not plan.uses_reader, appliance=appliance,
-            check=lambda: _check_unchanged(signatures), source_error=source_error,
+            check=lambda: check_unchanged(signatures), source_error=source_error,
             progress=progress, cancel=cancel, log=log)
+
+
+def source_files(info: ImageInfo) -> list[Path]:
+    """The files the image consists of (none for a physical disk), to notice changes while copying."""
+    return [] if info.device else [info.path] + [p.path for p in info.chain] + info.extent_files
+
+
+@contextmanager
+def open_source(info: ImageInfo, size: int, through_reader: bool, elevate: str = "auto",
+                cancel: CancelFn | None = None,
+                log: Callable[[str], None] | None = None) -> Iterator[tuple[str, Callable[[], str | None]]]:
+    """The qemu-img specification to read the disk INFO (SIZE bytes) from, and a function that
+    tells why reading failed, if it was VirtConvert&Create's reader. A physical disk is opened
+    read-only (by a helper with administrator rights if needed) and served through NBD like a
+    chain the reader merges (THROUGH_READER)."""
+    log = log or (lambda _m: None)
+    reader: ChainReader | devices.DeviceReader | None = None
+    server: NbdServer | None = None
+    try:
+        if info.device:
+            log(f"Opening {info.path} for reading")
+            fd = devices.open_device(info.path, elevate, cancel)
+            try:
+                reader = devices.DeviceReader(fd, size, info.name)
+            except BaseException:
+                os.close(fd)
+                raise
+            server = NbdServer(reader).start()
+            source = nbd_spec(server.socket_path, server.export)
+        elif through_reader:
+            # VirtConvert&Create reads the source (merging a chain, adding zeros at the end)
+            # and qemu-img reads that through NBD
+            reader = ChainReader.for_image(info, size)
+            server = NbdServer(reader).start()
+            source = nbd_spec(server.socket_path, server.export)
+            if info.chain:
+                log(f"Merging {info.name} with {', '.join(p.name for p in info.chain)} while converting")
+        else:
+            source = image_spec(info)
+
+        def source_error() -> str | None:
+            if server is not None and server.error is not None:
+                return f"Reading {info.name} failed: {server.error}"
+            return None
+
+        yield source, source_error
     finally:
         if server is not None:
             server.stop()
@@ -715,7 +741,7 @@ def _fsync(path: Path) -> None:
         pass
 
 
-def _check_unchanged(signatures: dict[Path, tuple[int, int] | None]) -> None:
+def check_unchanged(signatures: dict[Path, tuple[int, int] | None]) -> None:
     for path, before in signatures.items():
         if before is not None and file_signature(path) != before:
             raise ConvertError(f"{path.name} changed while it was being converted (is the virtual "
@@ -760,4 +786,5 @@ def repair(info: ImageInfo, qemu: QemuImg) -> str:
 
 
 __all__ = ["Target", "Job", "Plan", "Outcome", "PRESETS", "parse_target", "default_target",
-           "default_output", "unique_path", "make_plan", "execute", "verify_images", "repair", "spec"]
+           "default_output", "unique_path", "make_plan", "execute", "open_source", "source_files", "reads_itself",
+           "missing_qemu", "check_unchanged", "verify_images", "repair", "spec"]

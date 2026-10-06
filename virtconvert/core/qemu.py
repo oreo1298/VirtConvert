@@ -63,6 +63,12 @@ def image_spec(info) -> str:
     return source_spec(info.path, info.format.driver)
 
 
+def limited_spec(image: str, size: int) -> str:
+    """The first SIZE bytes of the qemu-img specification IMAGE (a json: one), as a raw image."""
+    inner = json.loads(image[len("json:"):])
+    return "json:" + json.dumps({"driver": "raw", "size": size, "file": inner})
+
+
 def nbd_spec(socket_path: str, export: str) -> str:
     """The disk served by nbd.NbdServer, as a raw image."""
     return "json:" + json.dumps({"driver": "raw", "file": {
@@ -224,6 +230,13 @@ class QemuImg:
                 args += ["-o", _opts(options)]
         args += [source, "-O", driver, str(target)]
         self.check_run(args, "Converting", progress=progress, cancel=cancel, keep_output=False)
+
+    def convert_into(self, source: str, target: str, *, progress: Progress | None = None,
+                     cancel: Cancel | None = None) -> None:
+        """Write SOURCE into the existing TARGET (an NBD URL, written as raw: -O), zeros included: the
+        target is a physical disk with old contents."""
+        self.check_run(["convert", "-p", "-n", source, "-O", "raw", target], "Writing", progress=progress,
+                       cancel=cancel, keep_output=False)
 
     def compare(self, a: str, b: str, *, progress: Progress | None = None,
                 cancel: Cancel | None = None) -> tuple[bool, str]:

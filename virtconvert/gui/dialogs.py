@@ -28,7 +28,7 @@ def primary(button: QPushButton) -> QPushButton:
 
 
 def ask_yes_no(parent: QWidget, title: str, text: str, yes: str = "Continue",
-               danger: bool = False, informative: str = "") -> bool:
+               danger: bool = False, informative: str = "", default_no: bool = False) -> bool:
     box = QMessageBox(parent)
     box.setWindowTitle(title)
     box.setIcon(QMessageBox.Warning if danger else QMessageBox.Question)
@@ -37,8 +37,8 @@ def ask_yes_no(parent: QWidget, title: str, text: str, yes: str = "Continue",
         box.setInformativeText(informative)
     ok = box.addButton(yes, QMessageBox.AcceptRole)
     ok.setProperty("variant", "danger" if danger else "primary")
-    box.addButton("Cancel", QMessageBox.RejectRole)
-    box.setDefaultButton(ok)
+    no = box.addButton("Cancel", QMessageBox.RejectRole)
+    box.setDefaultButton(no if default_no else ok)
     box.exec()
     return box.clickedButton() is ok
 

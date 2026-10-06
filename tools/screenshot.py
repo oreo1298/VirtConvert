@@ -32,6 +32,7 @@ from virtconvert.core.qemu import QemuImg  # noqa: E402
 from virtconvert.gui.app import app_icon  # noqa: E402
 from virtconvert.gui.create_dialog import CreateDiskDialog  # noqa: E402
 from virtconvert.gui.theme import theme  # noqa: E402
+from virtconvert.gui.write_dialog import WriteDiskDialog  # noqa: E402
 
 GIB = 1 << 30
 EFI = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
@@ -118,7 +119,7 @@ def demo_disks() -> list:
                 P("sdb4", "/dev/sdb4", 625999872, "ntfs", "", RECOVERY)])
     stick = D(path="/dev/sdc", name="sdc", size=31004295168, model="Ultra", vendor="SanDisk", transport="usb",
               removable=True, table="dos", partitions=[P("sdc1", "/dev/sdc1", 31003246592, "exfat", "STICK", "0x7")],
-              mountpoints=["/run/media/me/STICK"])
+              mountpoints=["/run/media/me/STICK"], mounted=[("/dev/sdc1", "/run/media/me/STICK")])
     return [ssd, stick]
 
 
@@ -226,6 +227,19 @@ def main() -> int:
         dialog.show()
         pump(0.5)
         dialog.grab().save(str(args.out / f"physical-{args.theme}.png"))
+        dialog.close()
+
+        # Write to disk: the Ubuntu disk onto the USB stick (demo disks again)
+        devices.is_device = lambda path: str(path).startswith("/dev/")
+        devices.disk_info = lambda path: next(d for d in demo if d.path == str(path))
+        devices.base_disks = lambda path: {Path(path).name}
+        win.table.selectRow(3)
+        pump(0.2)
+        item = win.current_item()
+        dialog = WriteDiskDialog(win, win.qemu, win.settings, item.source, item.info)
+        dialog.show()
+        pump(0.5)
+        dialog.grab().save(str(args.out / f"write-{args.theme}.png"))
         dialog.close()
         win.close()
         return 0

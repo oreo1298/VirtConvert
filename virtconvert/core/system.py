@@ -206,9 +206,13 @@ def doctor() -> list[Check]:
                         "Not needed for converting; install it to run the converted disks.",
                         optional=True))
     elevate = shutil.which("pkexec")
-    checks.append(Check("pkexec (copying disks)", bool(elevate), elevate or "not installed",
-                        "The app asks for your password with it to read a physical disk (polkit package); "
-                        "on the command line sudo does it.", optional=True))
+    checks.append(Check("pkexec (disks)", bool(elevate), elevate or "not installed",
+                        "The app asks for your password with it to read or write a physical disk (polkit "
+                        "package); on the command line sudo does it.", optional=True))
+    udisks = shutil.which("udisksctl")
+    checks.append(Check("udisksctl (disks)", bool(udisks), udisks or "not installed",
+                        "Unmounts a disk before writing onto it, without a password for USB sticks (udisks2 "
+                        "package); without it, umount asks for the password.", optional=True))
     from .create import FILESYSTEMS  # create imports this module
     for fs in FILESYSTEMS:
         tool = find_program(*fs.tools)

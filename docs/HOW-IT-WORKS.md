@@ -3,7 +3,8 @@
 VirtConvert&Create is a careful front end to `qemu-img`: it decides what the source is, finds everything
 the source depends on, decides how to write the target, lets qemu-img do the copying, and checks
 the result. New disks are put together the same way, from a partition table and a file system
-made by the distribution's mkfs program. This page describes each step and why it is there.
+made by the distribution's mkfs program, and a virtual disk is written onto a physical one the
+same way too. This page describes each step and why it is there.
 
 ## 1. Recognising the image (`core/probe.py`)
 
@@ -127,7 +128,9 @@ Unix socket in a private temporary folder and gives qemu-img
 source. The server implements the fixed newstyle handshake (`NBD_OPT_GO`, `NBD_OPT_INFO`,
 `NBD_OPT_EXPORT_NAME`) and `NBD_CMD_READ` with simple replies, and refuses everything else.
 Unallocated parts read as zeros without touching the disk, and qemu-img leaves zeros out of
-sparse targets. The same server pads a disk with zeros when the target has to be larger.
+sparse targets. The same server pads a disk with zeros when the target has to be larger. For
+writing onto a physical disk (section 7) it can also be writable: `NBD_CMD_WRITE`,
+`NBD_CMD_WRITE_ZEROES` and `NBD_CMD_FLUSH`.
 
 ## 3. Planning (`core/convert.py`)
 
@@ -245,7 +248,42 @@ with the source), and when the disk is mounted it warns (more strongly for the s
 skips the comparison afterwards: a disk in use keeps changing, so it would fail for no fault of the
 copy.
 
-## 7. Testing
+## 7. Writing onto a physical disk (`core/writedisk.py`)
+
+Any disk VirtConvert&Create reads can be written onto one of the computer's disks: every format, a
+merged chain, a disk inside an OVA, another physical disk.
+
+`make_write_plan` refuses what would go wrong or destroy something else: a partition instead of a
+whole disk, an empty card reader, a write-protected disk, the disk the running system uses (`/`,
+`/boot`, `/home`, swap…), a disk with LVM, RAID or unlocked encrypted volumes on it, the disk the
+image (or any file of its chain) is stored on, and a disk whose sector size doesn't match the
+image's partition table (a 512-byte GPT is not found on a 4 KB-sector disk). The app also passes
+the size, model and serial number of the disk the person saw, and the plan is made again right
+before writing: a different stick plugged in under the same name is refused. Mounted file systems
+of the disk are listed to be unmounted first (`udisksctl unmount`, as the file manager does; then
+`umount`, as root or through `sudo`/`pkexec`).
+
+The disk is opened by the same root helper as for reading, now with `O_RDWR | O_EXCL`: the kernel
+refuses the exclusive open while anything on the disk is mounted or held by device-mapper or md,
+and nothing can mount it while it is open. qemu-img then runs `convert -n -O raw` into the
+writable NBD server, as the user, which writes into the disk (`DeviceWriter`). Zeros are written
+too (as `BLKZEROOUT`, which lets the disk zero itself when it can), so nothing of the old contents
+shows through. Every 64 MB the written part is pushed out of the page cache (`POSIX_FADV_DONTNEED`
+starts the write-back), so a slow USB stick doesn't collect gigabytes in memory that take minutes
+to reach it at the end; then `fsync`. Comparing drops the disk's cache first, so it reads what is
+on the disk, not what the computer remembers.
+
+The size: an image no larger than the disk is written whole. One larger than the disk is accepted
+when its partitions (with a GPT's backup after them) end before the disk's end; then the first
+part is written, through a raw `size` limit around the source's qemu-img specification. Afterwards
+the disk is fitted (`move_backup_gpt`, what `sgdisk -e` does): the backup GPT entries and header go
+to the disk's last sectors, the last usable sector and the protective MBR follow the disk's size,
+and the image's old backup header, now in the middle of a larger disk, is cleared. Linux ignores a
+GPT whose partitions may lie past the disk's end, and partitioning tools complain about a backup
+in the wrong place. The last megabyte of a larger disk is cleared too: old GPT backups, RAID
+superblocks and ZFS labels live there and would confuse `blkid`.
+
+## 8. Testing
 
 - `tests/imagewriter.py` writes VHD, VHDX, VDI and DMG files (base and differencing, with partial
   sector bitmaps, zero blocks, 4 KB sectors, dirty logs, GPT and MBR partition tables) straight
@@ -264,5 +302,9 @@ copy.
 - `tests/test_devices.py` parses lsblk output of both kinds, checks the helper that hands over the
   disk, and copies a loop device (as root, or with passwordless sudo, which also runs the real
   helper).
+- `tests/test_writedisk.py` writes every format, a chain and an OVA onto regular files standing in
+  for disks (larger, smaller, mounted, failing), checks the refusals and the fitted GPT with
+  `sfdisk --verify`, and writes onto loop devices: exclusively opened, mounted ones unmounted,
+  disk to disk, and write-protected ones refused.
 - `tests/test_gui.py` drives the app offscreen; `tools/installer-smoke.sh` installs, uses,
   updates and removes VirtConvert&Create inside containers of other distributions (CI).

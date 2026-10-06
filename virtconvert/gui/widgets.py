@@ -6,6 +6,8 @@ with the EZP2019Linux suite.
 
 from __future__ import annotations
 
+import re
+
 from PySide6.QtCore import (
     QEasingCurve,
     QPropertyAnimation,
@@ -33,6 +35,14 @@ from PySide6.QtWidgets import (
 
 from . import icons
 from .theme import theme
+
+
+def breakable(text: str) -> str:
+    """TEXT with invisible break points after - _ . and in long runs, so a wrapped label can wrap a
+    file name like "Windows 11_C1D8EED4-9530-458C-…avhdx" (no break before a digit otherwise) instead
+    of growing as wide as it is."""
+    text = re.sub(r"([-_.])", "\\1\u200b", text)
+    return re.sub(r"([^\s\u200b]{16})(?=[^\s\u200b])", "\\1\u200b", text)
 
 
 def form_row(form: QFormLayout, text: str, field: QWidget, muted: bool = True) -> QLabel:

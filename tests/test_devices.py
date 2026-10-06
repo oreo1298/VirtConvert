@@ -149,7 +149,8 @@ def test_helper_hands_over_the_file(tmp_path):
         devices._open_with_helper(str(tmp_path / "disk"), [], lambda: False, 60, ())
     with pytest.raises(ConvertError, match="as administrator"):
         devices._open_with_helper(str(tmp_path / "disk"), [shutil.which("false")], lambda: False, 60, ())
-    assert not [p for p in Path(devices._socket_parent()).glob("virtconvert-*") if (p / "fd").exists()]
+    assert not [p for p in Path(devices._socket_parent()).glob("virtconvert-*")
+                if os.access(p, os.X_OK) and (p / "fd").exists()]
 
 
 def test_elevator(monkeypatch):

@@ -51,12 +51,15 @@ SOURCES = (
 
 
 class DiskChooser(QWidget):
-    """The computer's physical disks in a list, with a refresh button and a description."""
+    """The computer's physical disks in a list, with a refresh button and a description. For
+    writing onto a disk (FOR_WRITING), the disk the system runs from is marked, and a removable
+    one is chosen first."""
 
     changed = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, for_writing: bool = False):
         super().__init__(parent)
+        self.for_writing = for_writing
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
@@ -89,11 +92,16 @@ class DiskChooser(QWidget):
         self.box.blockSignals(True)
         self.box.clear()
         for d in self.disks:
-            self.box.addItem(f"{d.title}  ·  {human_bytes(d.size)}", d.path)
+            mark = "  ·  the running system" if self.for_writing and d.system else ""
+            self.box.addItem(f"{d.title}  ·  {human_bytes(d.size)}{mark}", d.path)
             self.box.setItemData(self.box.count() - 1, f"{d.path}\n{d.summary}", Qt.ToolTipRole)
         if not self.disks:
             self.box.addItem(self.error or "No disks found", None)
         index = self.box.findData(current) if current else -1
+        if index < 0 and self.for_writing:
+            # not the system's disk: a USB stick or memory card, else any other disk
+            ranked = sorted(range(len(self.disks)), key=lambda i: (self.disks[i].system, not self.disks[i].removable))
+            index = ranked[0] if ranked and not self.disks[ranked[0]].system else -1
         self.box.setCurrentIndex(max(0, index))
         self.box.blockSignals(False)
         self._selected()
