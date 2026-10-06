@@ -51,12 +51,15 @@ from ..core.convert import (
     repair,
     verify_images,
 )
+from ..core.create import create_disk, make_create_plan
 from ..core.errors import ConvertError, OperationCancelled, VerifyError
-from ..core.images import inspect_image
+from ..core.images import expand_sources, inspect_image
 from ..core.qemu import QemuImg
 from ..core.util import human_bytes, mmss
 from . import icons
+from .create_dialog import CreateDiskDialog
 from .dialogs import AboutDialog, QemuMissingDialog, ask_yes_no
+from .pickers import TargetPicker, target_from_setting
 from .queue import (
     BLOCKED,
     CANCELLED,
@@ -76,7 +79,6 @@ from .widgets import (
     Card,
     DropZone,
     KeyValueGrid,
-    SegmentedControl,
     StatTile,
     StatusDot,
     Toast,
@@ -87,9 +89,8 @@ from .widgets import (
 from .worker import OperationRunner
 
 MAX_LOG_ENTRIES = 3000
-IMAGE_FILTER = ("Disk images (*.vhd *.vhdx *.avhd *.avhdx *.vdi *.vmdk *.qcow2 *.qcow *.img *.raw);;"
+IMAGE_FILTER = ("Disk images (" + " ".join(f"*{e}" for f in F.ALL for e in f.extensions) + ");;"
                 "All files (*)")
-HYPERVISORS = ("VirtualBox", "Hyper-V", "VMware", "Azure")
 
 
 class ClickableFrame(QFrame):
@@ -174,7 +175,9 @@ class MainWindow(QMainWindow):
     def _build_actions(self) -> None:
         a = self._action
         self.act_add = a("Add…", "open", lambda: self.add_files(), "Ctrl+O",
-                         "Add VHD, VHDX, VDI, VMDK or other disk images to the list")
+                         "Add VHD, VHDX, VDI, VMDK, QCOW2, OVA or other disk images to the list")
+        self.act_new = a("New disk…", "plus", self.new_disk, "Ctrl+N",
+                         "Create a new virtual disk: empty, or with a formatted partition")
         self.act_remove = a("Remove", "trash", self.remove_selected, "Del",
                             "Remove the selected images from the list (the files stay)")
         self.act_clear = a("Clear done", "eraser", self.clear_finished, "Ctrl+Shift+L",
@@ -211,7 +214,7 @@ class MainWindow(QMainWindow):
     def _build_menus(self) -> None:
         mb = self.menuBar()
         m = mb.addMenu("&File")
-        for act in (self.act_add, None, self.act_folder, self.act_copy_path, None, self.act_quit):
+        for act in (self.act_add, self.act_new, None, self.act_folder, self.act_copy_path, None, self.act_quit):
             m.addSeparator() if act is None else m.addAction(act)
         m = mb.addMenu("&Images")
         for act in (self.act_convert, self.act_cancel, None, self.act_remove, self.act_clear,
@@ -246,7 +249,7 @@ class MainWindow(QMainWindow):
         text.setSpacing(0)
         name = QLabel(APP_NAME)
         name.setFont(scaled_font(name, 1.25, bold=True))
-        sub = QLabel("Hyper-V ⇄ VirtualBox disks")
+        sub = QLabel("Convert and create virtual disks")
         sub.setObjectName("Muted")
         sub.setFont(scaled_font(sub, 0.85))
         text.addWidget(name)
@@ -255,7 +258,7 @@ class MainWindow(QMainWindow):
         bl.addLayout(text)
         tb.addWidget(brand)
         tb.addSeparator()
-        for act in (self.act_add, self.act_remove, self.act_clear):
+        for act in (self.act_add, self.act_new, self.act_remove, self.act_clear):
             tb.addAction(act)
         tb.addSeparator()
         tb.addAction(self.act_convert)
@@ -342,8 +345,8 @@ class MainWindow(QMainWindow):
         self.img_badge.hide()
         card.header.addWidget(self.img_badge)
 
-        self.img_empty = QLabel("Add a VHD, VHDX, VDI or VMDK file to begin. You can also drop "
-                                "files on the window.")
+        self.img_empty = QLabel("Add a disk image (VHD, VHDX, VDI, VMDK, QCOW2, OVA…) to convert it, "
+                                "or drop files on the window. New disk makes an empty or formatted one.")
         self.img_empty.setObjectName("Muted")
         self.img_empty.setWordWrap(True)
         card.add(self.img_empty)
@@ -400,49 +403,12 @@ class MainWindow(QMainWindow):
     def _build_target_card(self) -> Card:
         card = Card("Convert to", "convert")
         self.target_card = card
-        self.fmt_seg = SegmentedControl()
-        for fmt in F.GUI_TARGETS:
-            self.fmt_seg.add(fmt.label, fmt.key, fmt.title)
-        self.fmt_seg.changed.connect(lambda _v: self._target_edited())
-        card.add(self.fmt_seg)
-        self.fmt_desc = QLabel()
-        self.fmt_desc.setObjectName("Muted")
-        self.fmt_desc.setWordWrap(True)
-        card.add(self.fmt_desc)
-        works = QHBoxLayout()
-        works.setSpacing(6)
-        works_label = QLabel("Opens in")
-        works_label.setObjectName("Muted")
-        works.addWidget(works_label)
-        works.addSpacing(4)
-        self.works_badges = {}
-        for name in HYPERVISORS:
-            b = badge(name, "Idle")
-            self.works_badges[name] = b
-            works.addWidget(b)
-        works.addStretch(1)
-        card.add_layout(works)
-
-        alloc = QHBoxLayout()
-        alloc.setSpacing(10)
-        self.alloc_label = QLabel("Allocation")
-        self.alloc_label.setObjectName("Muted")
-        self.alloc_label.setMinimumWidth(74)
-        self.alloc_seg = SegmentedControl()
-        self.alloc_seg.add("Dynamic", "dynamic", "The file grows as the guest writes data")
-        self.alloc_seg.add("Fixed", "fixed", "The whole disk is allocated now (slightly faster)")
-        self.alloc_seg.changed.connect(lambda _v: self._target_edited())
-        self.vmdk_seg = SegmentedControl()
-        self.vmdk_seg.add("Regular", "regular", "A normal VMDK that VirtualBox and VMware run from")
-        self.vmdk_seg.add("Stream", "stream", "Stream-optimized: for OVA appliances and VMware ESXi")
-        self.vmdk_seg.changed.connect(lambda _v: self._target_edited())
-        alloc.addWidget(self.alloc_label)
-        alloc.addWidget(self.alloc_seg, 1)
-        alloc.addWidget(self.vmdk_seg, 1)
-        card.add_layout(alloc)
-        self.azure_chk = QCheckBox("For Azure (fixed, whole megabytes)")
-        self.azure_chk.toggled.connect(lambda _c: self._target_edited())
-        card.add(self.azure_chk)
+        self.picker = TargetPicker()
+        self.picker.changed.connect(self._target_edited)
+        card.add(self.picker)
+        # the controls, by the names the tests and the screenshot tool use
+        self.fmt_seg, self.alloc_seg, self.vmdk_seg = self.picker.fmt_seg, self.picker.alloc_seg, self.picker.vmdk_seg
+        self.azure_chk, self.split_chk = self.picker.azure_chk, self.picker.split_chk
 
         out_row = QHBoxLayout()
         out_row.setSpacing(8)
@@ -506,8 +472,11 @@ class MainWindow(QMainWindow):
         card.header.setContentsMargins(15, 0, 9, 0)
 
         self.queue_stack = QStackedWidget()
-        self.drop_zone = DropZone()
+        self.drop_zone = DropZone(text="Hyper-V disks become VDI for VirtualBox; VirtualBox disks go to VHDX for "
+                                       "Hyper-V; or pick\nVMDK, QCOW2, OVA and more. Checkpoints and snapshots are "
+                                       "merged with their parents.", secondary="New disk…")
         self.drop_zone.addRequested.connect(lambda: self.add_files())
+        self.drop_zone.secondaryRequested.connect(self.new_disk)
         holder = QWidget()
         hl = QVBoxLayout(holder)
         hl.setContentsMargins(14, 4, 14, 14)
@@ -704,25 +673,31 @@ class MainWindow(QMainWindow):
                                                     IMAGE_FILTER)
             if not paths:
                 return
-        known = {item.source.resolve() for item in self.model.items}
+        known = {item.key for item in self.model.items}
         added = 0
         for p in paths:
-            path = Path(p).expanduser()
-            try:
-                resolved = path.resolve()
-            except OSError:
-                resolved = path
-            if resolved in known:
-                self.log(f"{path.name} is already in the list.", "detail")
+            given = Path(p).expanduser()
+            if given.is_dir() and not given.name.lower().endswith(".hdd"):
+                self.log(f"{given.name} is a folder; add the image files in it.", "warning")
                 continue
-            if path.is_dir():
-                self.log(f"{path.name} is a folder; add the image files in it.", "warning")
-                continue
-            known.add(resolved)
-            item = Item(source=resolved, target=Target(F.VDI))
-            self.model.add(item)
-            self._inspect(item)
-            added += 1
+            # an OVA with several disks is one item per disk; an OVF stands for its disk files
+            for path, member in expand_sources(given):
+                try:
+                    resolved = path.resolve()
+                except OSError:
+                    resolved = path
+                name = f"{path.name} › {member}" if member else path.name
+                if (resolved, member) in known:
+                    self.log(f"{name} is already in the list.", "detail")
+                    continue
+                if resolved.is_dir():
+                    self.log(f"{path.name} is a folder; add the image files in it.", "warning")
+                    continue
+                known.add((resolved, member))
+                item = Item(source=resolved, target=Target(F.VDI), member=member)
+                self.model.add(item)
+                self._inspect(item)
+                added += 1
         if paths:
             self.settings.setValue("last_dir", str(Path(paths[-1]).expanduser().parent))
         if added and not self.table.selectionModel().hasSelection():
@@ -732,11 +707,11 @@ class MainWindow(QMainWindow):
         item.state = INSPECTING
         self.model.refresh(item)
         qemu, parents, force = self.qemu, dict(item.parents), item.force_parent
-        source, item_id = item.source, item.id
+        source, member, item_id = item.source, item.member, item.id
 
         def work():
             try:
-                info = inspect_image(source, qemu, parents, force)
+                info = inspect_image(source, qemu, parents, force, member=member)
             except Exception as exc:  # noqa: BLE001 - shown on the item
                 info = exc
             self.inspected.emit(item_id, info)
@@ -774,15 +749,11 @@ class MainWindow(QMainWindow):
         self.log(text)
 
     def _remembered_target(self, info) -> Target:
-        to_vbox = info.format in F.HYPERV_FORMATS
-        key = "target_vbox" if to_vbox else "target_hyperv"
-        saved = str(self.settings.value(key, "vdi" if to_vbox else "vhdx"))
-        fmt_key, _, variant = saved.partition(":")
-        fmt = F.BY_KEY.get(fmt_key) or (F.VDI if to_vbox else F.VHDX)
-        if fmt not in F.GUI_TARGETS:
-            fmt = F.VDI if to_vbox else F.VHDX
-        return Target(fmt, fixed=variant == "fixed", stream=variant == "stream",
-                      azure=variant == "azure").normalized()
+        """The last target chosen for this kind of source: one for VirtualBox's own disks
+        (they go to Hyper-V by default) and one for everything else (to VirtualBox)."""
+        default = F.default_target_for(info.format)
+        key = "target_hyperv" if default is F.VHDX else "target_vbox"
+        return target_from_setting(str(self.settings.value(key, default.key)), default)
 
     def _replan(self, item: Item) -> None:
         if item.info is None or item.state in (WAITING, RUNNING, DONE):
@@ -801,7 +772,7 @@ class MainWindow(QMainWindow):
             item.output = item.output.with_suffix(item.target.format.extension)
         job = Job(source=item.source, target=item.target, output=item.output,
                   overwrite=self.overwrite_chk.isChecked() or item.overwrite, parents=dict(item.parents),
-                  force_parent=item.force_parent)
+                  force_parent=item.force_parent, member=item.member)
         item.plan = make_plan(job, self.qemu, item.info)
         item.target = job.target
         clash = next((i for i in self.model.items if i is not item and i.output == item.output
@@ -861,7 +832,7 @@ class MainWindow(QMainWindow):
         self.img_badge.setVisible(item is not None)
         if item is None:
             return
-        self.img_name.setText(item.name)
+        self.img_name.setText(info.name if info is not None else item.name)
         if info is None:
             self.img_sub.setText("Reading…" if item.state == INSPECTING else item.message)
             set_badge(self.img_badge, "READING" if item.state == INSPECTING else "ERROR",
@@ -921,26 +892,9 @@ class MainWindow(QMainWindow):
         try:
             enabled = item is not None and item.editable and item.info is not None \
                 and item.info.format is not None
-            for w in (self.fmt_seg, self.alloc_seg, self.vmdk_seg, self.azure_chk, self.out_edit,
-                      self.out_btn):
+            for w in (self.picker, self.out_edit, self.out_btn):
                 w.setEnabled(enabled)
-            target = item.target if item is not None else Target(F.VDI)
-            fmt = target.format
-            if fmt in F.GUI_TARGETS:
-                self.fmt_seg.set_value(fmt.key)
-            self.fmt_desc.setText(fmt.title)
-            for name, b in self.works_badges.items():
-                works = name in fmt.works_with or (name == "Azure" and target.azure)
-                set_badge(b, name, "Ok" if works else "Idle")
-            is_vmdk = fmt is F.VMDK
-            self.alloc_seg.setVisible(not is_vmdk)
-            self.vmdk_seg.setVisible(is_vmdk)
-            self.alloc_label.setText("Variant" if is_vmdk else "Allocation")
-            self.alloc_seg.set_value("fixed" if target.fixed else "dynamic")
-            self.vmdk_seg.set_value("stream" if target.stream else "regular")
-            self.alloc_seg.setEnabled(enabled and not target.azure)
-            self.azure_chk.setVisible(fmt is F.VHD)
-            self.azure_chk.setChecked(target.azure)
+            self.picker.set_target(item.target if item is not None else Target(F.VDI))
             self.out_edit.setText(str(item.output) if item is not None and item.output else "")
             self.out_edit.setCursorPosition(len(self.out_edit.text()))
             self._show_plan(item)
@@ -973,11 +927,7 @@ class MainWindow(QMainWindow):
     def _target_edited(self) -> None:
         if self._updating_controls:
             return
-        key = self.fmt_seg.value()
-        fmt = F.BY_KEY.get(key, F.VDI)
-        target = Target(fmt, fixed=self.alloc_seg.value() == "fixed",
-                        stream=self.vmdk_seg.value() == "stream",
-                        azure=self.azure_chk.isChecked() and fmt is F.VHD).normalized()
+        target = self.picker.target()
         for item in self.selected_items():
             if not item.editable or item.info is None or item.info.format is None:
                 continue
@@ -986,11 +936,10 @@ class MainWindow(QMainWindow):
                 item.state = READY
                 item.outcome = None
             self._replan(item)
-            to_vbox = item.info.format in F.HYPERV_FORMATS
-            variant = "azure" if target.azure else "stream" if target.stream else \
-                "fixed" if target.fixed else ""
-            self.settings.setValue("target_vbox" if to_vbox else "target_hyperv",
-                                   fmt.key + (f":{variant}" if variant else ""))
+            default = F.default_target_for(item.info.format)
+            variant = self.picker.variant_key()
+            self.settings.setValue("target_hyperv" if default is F.VHDX else "target_vbox",
+                                   target.format.key + (f":{variant}" if variant else ""))
         self._show_target(self.current_item())
         self._update_actions()
 
@@ -1252,7 +1201,7 @@ class MainWindow(QMainWindow):
         job = Job(source=item.source, target=item.target, output=item.output,
                   verify=self.verify_chk.isChecked(),
                   overwrite=self.overwrite_chk.isChecked() or item.overwrite,
-                  parents=dict(item.parents), force_parent=item.force_parent)
+                  parents=dict(item.parents), force_parent=item.force_parent, member=item.member)
         log = self.logLine.emit
 
         def work(progress, cancel):
@@ -1275,7 +1224,8 @@ class MainWindow(QMainWindow):
         item.done = item.total
         self.model.refresh(item)
         check = ", identical to the source" if outcome.verified else ""
-        self.log(f"Saved {outcome.output} ({human_bytes(outcome.file_size)}{check}, "
+        files = f" in {len(outcome.files)} files" if len(outcome.files) > 1 else ""
+        self.log(f"Saved {outcome.output} ({human_bytes(outcome.file_size)}{files}{check}, "
                  f"{mmss(outcome.seconds)}).", "success")
         self.toast.show_message(f"{outcome.output.name} is ready" + (" and verified" if outcome.verified else ""),
                                 "success")
@@ -1380,6 +1330,38 @@ class MainWindow(QMainWindow):
             self._stop_queue = True
             self.runner.cancel()
             self.op_label.setText("Cancelling…")
+
+    # ------------------------------------------------------------------ new disks
+
+    def new_disk(self) -> None:
+        if self.qemu is None:
+            self.offer_qemu_install()
+            return
+        if self.runner.busy:
+            self.toast.show_message(f"Wait until {self.runner.name} has finished", "warning")
+            return
+        dialog = CreateDiskDialog(self, self.qemu, self.settings)
+        if not dialog.exec() or dialog.disk is None:
+            return
+        disk, qemu, log = dialog.disk, self.qemu, self.logLine.emit
+        plan = make_create_plan(disk, qemu)
+
+        def work(progress, cancel):
+            again = make_create_plan(disk, qemu)     # the folder may have changed meanwhile
+            if not again.ok:
+                raise ConvertError(again.errors[0])
+            return create_disk(again, qemu, progress, cancel, log=lambda m: log(m, "detail"))
+
+        self.log(f"Creating {disk.output}: {plan.summary}")
+        self._start(f"Creating {disk.output.name}", work, self._disk_created)
+
+    def _disk_created(self, outcome) -> None:
+        check = ", checked" if outcome.verified else ""
+        files = f" in {len(outcome.files)} files" if len(outcome.files) > 1 else ""
+        self.log(f"Created {outcome.output} ({human_bytes(outcome.size)} disk, "
+                 f"{human_bytes(outcome.file_size)} file{files}{check}).", "success")
+        self.toast.show_message(f"{outcome.output.name} is ready", "success")
+        self.settings.setValue("create/last_output", str(outcome.output))
 
     # ------------------------------------------------------------------ misc
 

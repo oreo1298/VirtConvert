@@ -173,7 +173,7 @@ def cmd_convert(args) -> int:
         planned.add(output)
         job = Job(source=source, target=target, output=output, verify=not args.no_verify,
                   overwrite=args.overwrite, parents=parents, force_parent=args.force_parent,
-                  candidates=candidates)
+                  candidates=candidates, member=member)
         plan = make_plan(job, qemu, info)
         print(f"{info.name} → {job.output}")
         print(f"  {info.label}, {human_bytes(info.virtual_size)}  →  {job.target.label}"
@@ -480,6 +480,9 @@ def main(argv: list[str] | None = None) -> int:
     except ConvertError as exc:
         print(f"\nError: {exc}", file=sys.stderr)
         return 1
+    except BrokenPipeError:             # `vertconvert formats | head`
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
 
 
 if __name__ == "__main__":

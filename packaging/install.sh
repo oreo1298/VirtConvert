@@ -6,7 +6,8 @@
 #   ./packaging/install.sh --user     just for you, in ~/.local (no sudo for VertConvert&Create itself)
 #
 # Options:
-#   --deps / --no-deps   install qemu-img, Python and Qt with your package manager (default: ask)
+#   --deps / --no-deps   install qemu-img, Python, Qt and the mkfs tools with your package manager
+#                        (default: ask)
 #   --yes                don't ask (installs the dependencies)
 #   --python PATH        the Python 3.10+ to use (default: python3)
 #
@@ -78,8 +79,19 @@ detect_pm() {
 }
 PM="$(detect_pm)"
 
-# qemu-img, Python with venv, PySide6 where the distribution packages it, and the libraries the
-# PySide6 wheels from PyPI need where it doesn't (packages a release doesn't have are skipped).
+# qemu-img, Python with venv, PySide6 where the distribution packages it, the libraries the
+# PySide6 wheels from PyPI need where it doesn't, and the mkfs programs for new formatted disks
+# (packages a release doesn't have are skipped).
+fs_pkgs_for() {
+  case "$PM" in
+    pacman|apt-get|xbps-install|eopkg) echo "e2fsprogs dosfstools exfatprogs ntfs-3g btrfs-progs xfsprogs" ;;
+    dnf|yum) echo "e2fsprogs dosfstools exfatprogs ntfsprogs btrfs-progs xfsprogs" ;;
+    zypper) echo "e2fsprogs dosfstools exfatprogs ntfsprogs btrfsprogs xfsprogs" ;;
+    apk) echo "e2fsprogs dosfstools exfatprogs ntfs-3g-progs btrfs-progs xfsprogs" ;;
+    *) echo "" ;;
+  esac
+}
+
 pkgs_for() {
   case "$PM" in
     pacman) echo "python pyside6 qt6-svg qt6-wayland qemu-img" ;;
@@ -111,7 +123,7 @@ pm_install() {
 }
 
 install_deps() {
-  local pkgs; pkgs="$(pkgs_for)"
+  local pkgs; pkgs="$(pkgs_for) $(fs_pkgs_for)"
   case "$PM" in
     nix-env) warn "NixOS: add qemu-utils and python3Packages.pyside6 to your configuration"; return ;;
     rpm-ostree) warn "Immutable system: run 'sudo rpm-ostree install qemu-img', restart, then install with --user"; return ;;

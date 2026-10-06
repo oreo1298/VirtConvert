@@ -33,6 +33,7 @@ _ids = itertools.count(1)
 class Item:
     source: Path
     target: Target
+    member: str | None = None    # a disk inside the OVA SOURCE
     output: Path | None = None
     info: ImageInfo | None = None
     plan: Plan | None = None
@@ -50,7 +51,11 @@ class Item:
 
     @property
     def name(self) -> str:
-        return self.source.name
+        return f"{self.source.name} › {self.member}" if self.member else self.source.name
+
+    @property
+    def key(self) -> tuple[Path, str | None]:
+        return self.source, self.member
 
     @property
     def from_label(self) -> str:
@@ -60,6 +65,8 @@ class Item:
             return "Unknown"
         if self.info.chain:
             return f"{self.info.format.label} checkpoint"
+        if self.info.member:
+            return f"{self.info.format.label} in OVA"
         return self.info.label.replace(" · ", " ")
 
     @property
@@ -81,6 +88,8 @@ class Item:
             return f"{self.stage or 'Converting'} {pct:.0f}%"
         if self.state == DONE and self.outcome is not None:
             verified = " · verified" if self.outcome.verified else ""
+            if len(self.outcome.files) > 1:
+                verified += f" · {len(self.outcome.files)} files"
             return f"Done{verified} · {mmss(self.outcome.seconds)}"
         if self.state == FAILED:
             return f"Failed: {self.message}" if self.message else "Failed"

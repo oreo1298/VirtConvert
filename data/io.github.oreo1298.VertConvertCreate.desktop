@@ -1,13 +1,13 @@
 [Desktop Entry]
 Type=Application
 Name=VertConvert&Create
-GenericName=Disk Image Converter
-Comment=Convert Hyper-V disks (VHD, VHDX) for VirtualBox (VDI, VMDK) and back
+GenericName=Virtual Disk Converter
+Comment=Convert and create virtual disks for VirtualBox, Hyper-V, VMware and QEMU/KVM
 Exec=vertconvert %F
 Icon=io.github.oreo1298.VertConvertCreate
 Terminal=false
 Categories=System;Emulator;Qt;
-Keywords=vhd;vhdx;avhdx;vdi;vmdk;virtualbox;hyper-v;hyperv;qemu-img;disk;image;convert;virtual machine;checkpoint;snapshot;
-MimeType=application/x-vhd-disk;application/x-vhdx-disk;application/x-vmdk-disk;application/x-virtualbox-vdi;application/x-virtualbox-vhd;application/x-virtualbox-vhdx;application/x-virtualbox-vmdk;
+Keywords=vhd;vhdx;avhdx;vdi;vmdk;qcow2;qed;ova;ovf;virtualbox;hyper-v;hyperv;vmware;qemu;kvm;proxmox;qemu-img;disk;image;convert;create;new disk;virtual machine;appliance;checkpoint;snapshot;
+MimeType=application/x-vhd-disk;application/x-vhdx-disk;application/x-vmdk-disk;application/x-virtualbox-vdi;application/x-virtualbox-vhd;application/x-virtualbox-vhdx;application/x-virtualbox-vmdk;application/x-qemu-disk;application/x-virtualbox-qcow2;application/x-virtualbox-qed;application/x-virtualbox-ova;application/x-virtualbox-ovf;application/x-raw-disk-image;
 StartupNotify=true
 StartupWMClass=vertconvert

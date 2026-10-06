@@ -27,8 +27,10 @@ from PySide6.QtCore import QCoreApplication  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import vertconvert.gui.main_window as mw  # noqa: E402
+from vertconvert.core import ova  # noqa: E402
 from vertconvert.core.qemu import QemuImg  # noqa: E402
 from vertconvert.gui.app import app_icon  # noqa: E402
+from vertconvert.gui.create_dialog import CreateDiskDialog  # noqa: E402
 from vertconvert.gui.theme import theme  # noqa: E402
 
 GIB = 1 << 30
@@ -87,7 +89,22 @@ def make_demo(folder: Path) -> list[Path]:
     router = folder / "Hyper-V" / "pfSense.vhdx"
     W.write_vhdx(router, 1 * GIB, W.to_sectors(W.mbr_sector([(63, 2 * 1024 * 1024 - 63, 0xA5, True)])),
                  creator="Microsoft Windows (demo image)")
-    return [router, win, child, ubuntu, xp]
+
+    # an appliance downloaded from somewhere: a stream-optimized VMDK inside an OVA
+    appliances = folder / "Downloads"
+    appliances.mkdir()
+    raw = appliances / "disk.raw"
+    with open(raw, "wb") as f:
+        f.truncate(20 * GIB)
+        f.write(W.mbr_sector([(2048, 20 * GIB // 512 - 2048, 0x83, True)])[0])
+    vmdk = appliances / "Debian-disk1.vmdk"
+    QemuImg.find().check_run(["convert", "-q", "-f", "raw", "-O", "vmdk", "-o", "subformat=streamOptimized",
+                              str(raw), str(vmdk)], "demo")
+    raw.unlink()
+    appliance = appliances / "Debian 12 appliance.ova"
+    ova.write_ova(appliance, vmdk, "Debian", 20 * GIB, os_hint="linux")
+    vmdk.unlink()
+    return [router, win, child, ubuntu, xp, appliance]
 
 
 def main() -> int:
@@ -153,6 +170,33 @@ def main() -> int:
         win.grab().save(str(args.out / f"progress-{args.theme}.png"))
         win._running = None
         item.state = mw.READY
+        win._set_op_state(False, "Ready")
+
+        # the appliance, going to QEMU/KVM
+        win.table.selectRow(5)
+        pump(0.2)
+        win.fmt_seg.set_value("qcow2")
+        win._target_edited()
+        pump(0.4)
+        win.grab().save(str(args.out / f"appliance-{args.theme}.png"))
+
+        # New disk
+        win.settings.setValue("create/last_output", str(tmp / "Hyper-V" / "x.vhdx"))
+        dialog = CreateDiskDialog(win, win.qemu, win.settings)
+        dialog.picker.fmt_seg.set_value("vhdx")
+        dialog.picker._edited()
+        dialog._format_changed()
+        dialog.size_spin.setValue(256)
+        dialog.contents_seg.set_value("formatted")
+        dialog._contents_changed()
+        dialog.fs_box.setCurrentIndex(dialog.fs_box.findData("ntfs"))
+        dialog.label_edit.setText("Data")
+        dialog.out_edit.setText(str(tmp / "Hyper-V" / "Data.vhdx"))
+        dialog._replan()
+        dialog.show()
+        pump(0.5)
+        dialog.grab().save(str(args.out / f"create-{args.theme}.png"))
+        dialog.close()
         win.close()
         return 0
     finally:

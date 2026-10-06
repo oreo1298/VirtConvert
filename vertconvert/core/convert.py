@@ -1,9 +1,9 @@
 """Planning and running a conversion.
 
-A conversion writes `<output>.part` next to the output and renames it when
-qemu-img has finished and (optionally) the copy has been compared with the
-source, so an interrupted run never leaves a half-written file under the real
-name. Sources are only ever read.
+A conversion writes into its own folder `<output>.<random>.part` next to the
+output and moves the files out when qemu-img has finished and (optionally) the
+copy has been compared with the source, so an interrupted run never leaves a
+half-written file under the real name. Sources are only ever read.
 """
 
 from __future__ import annotations
@@ -190,6 +190,7 @@ class Job:
     parents: dict[Path, Path] = field(default_factory=dict)
     force_parent: bool = False
     candidates: list[Path] = field(default_factory=list)
+    member: str | None = None        # a disk inside the OVA SOURCE
 
 
 @dataclass
@@ -230,7 +231,7 @@ def make_plan(job: Job, qemu: QemuImg | None, info: ImageInfo | None = None) -> 
     """Check everything that can be checked before converting."""
     job.target = job.target.normalized()
     if info is None:
-        info = inspect_image(job.source, qemu, job.parents, job.force_parent, job.candidates)
+        info = inspect_image(job.source, qemu, job.parents, job.force_parent, job.candidates, job.member)
     plan = Plan(job=job, info=info)
     target = job.target
     fmt = target.format

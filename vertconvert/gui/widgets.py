@@ -267,14 +267,15 @@ class Toast(QWidget):
 
 
 class SegmentedControl(QFrame):
-    """A row of mutually exclusive toggle buttons."""
+    """A row (or, with COLUMNS, a grid) of mutually exclusive toggle buttons."""
 
     changed = Signal(object)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, columns: int = 0):
         super().__init__(parent)
         self.setObjectName("Segmented")
-        self._layout = QHBoxLayout(self)
+        self._columns = columns
+        self._layout = QGridLayout(self) if columns else QHBoxLayout(self)
         self._layout.setContentsMargins(3, 3, 3, 3)
         self._layout.setSpacing(2)
         self._group = QButtonGroup(self)
@@ -290,9 +291,13 @@ class SegmentedControl(QFrame):
         btn.setCheckable(True)
         btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn.setCursor(Qt.PointingHandCursor)
-        self._group.addButton(btn, len(self._values))
+        index = len(self._values)
+        self._group.addButton(btn, index)
         self._values.append(value)
-        self._layout.addWidget(btn)
+        if self._columns:
+            self._layout.addWidget(btn, index // self._columns, index % self._columns)
+        else:
+            self._layout.addWidget(btn)
 
     def clear(self) -> None:
         for btn in self._group.buttons():
@@ -307,6 +312,13 @@ class SegmentedControl(QFrame):
     def set_value(self, value: object) -> None:
         if value in self._values:
             self._group.button(self._values.index(value)).setChecked(True)
+
+    def set_item_enabled(self, value: object, enabled: bool, tooltip: str | None = None) -> None:
+        if value in self._values:
+            btn = self._group.button(self._values.index(value))
+            btn.setEnabled(enabled)
+            if tooltip is not None:
+                btn.setToolTip(tooltip)
 
 
 def badge(text: str, kind: str = "Idle") -> QLabel:
@@ -327,11 +339,13 @@ def set_badge(label: QLabel, text: str, kind: str) -> None:
 
 
 class DropZone(QFrame):
-    """The empty state of the queue: a dashed area to drop images on, with an Add button."""
+    """The empty state of the queue: a dashed area to drop images on, with an Add button
+    (and, given SECONDARY, a second one next to it)."""
 
     addRequested = Signal()
+    secondaryRequested = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, text: str = "", button: str = "Add images…", secondary: str = ""):
         super().__init__(parent)
         self.setObjectName("DropZone")
         lay = QVBoxLayout(self)
@@ -344,11 +358,10 @@ class DropZone(QFrame):
         title.setObjectName("Heading")
         title.setFont(scaled_font(title, 1.3, bold=True))
         title.setAlignment(Qt.AlignCenter)
-        text = QLabel("VHD and VHDX from Hyper-V become VDI for VirtualBox; VDI and VMDK go back to VHDX.\n"
-                      "Checkpoints (.avhdx) and VirtualBox snapshots are merged with their parents.")
+        text = QLabel(text)
         text.setObjectName("Muted")
         text.setAlignment(Qt.AlignCenter)
-        self.button = QPushButton("Add images…")
+        self.button = QPushButton(button)
         self.button.setProperty("variant", "primary")
         self.button.setCursor(Qt.PointingHandCursor)
         self.button.clicked.connect(self.addRequested)
@@ -356,7 +369,18 @@ class DropZone(QFrame):
         lay.addWidget(title)
         lay.addWidget(text, 0, Qt.AlignHCenter)
         lay.addSpacing(6)
-        lay.addWidget(self.button, 0, Qt.AlignHCenter)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        buttons.addStretch(1)
+        buttons.addWidget(self.button)
+        self.secondary = None
+        if secondary:
+            self.secondary = QPushButton(secondary)
+            self.secondary.setCursor(Qt.PointingHandCursor)
+            self.secondary.clicked.connect(self.secondaryRequested)
+            buttons.addWidget(self.secondary)
+        buttons.addStretch(1)
+        lay.addLayout(buttons)
         lay.addStretch(1)
         theme.changed.connect(self._retheme)
         self._retheme(theme.palette)

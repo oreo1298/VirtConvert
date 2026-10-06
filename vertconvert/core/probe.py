@@ -357,8 +357,15 @@ def _vmdk(info: ImageInfo, head: bytes, read) -> None:
             info.notes.append(f"This is a snapshot of {Path(hint.replace(chr(92), '/')).name}; "
                               "qemu-img merges it with its parent.")
         info.disk_id = values.get("ddb.uuid.image", "")
-        if values.get("ddb.toolsversion") or values.get("ddb.virtualhwversion"):
+        # who wrote it, from the habits of each: VMware keeps a long content ID and its tools'
+        # version, VirtualBox the disk's UUIDs, qemu-img a made-up tools version
+        tools = values.get("ddb.toolsversion", "")
+        if values.get("ddb.longcontentid") or tools not in ("", "0", "2147483647"):
             info.creator = "VMware"
+        elif info.disk_id:
+            info.creator = "VirtualBox"
+        elif tools == "2147483647":
+            info.creator = "QEMU"
         extents = _DESC_EXTENT.findall(descriptor)
         if head[:4] not in (VMDK_SPARSE_MAGIC, VMDK_COWD_MAGIC):
             total = 0

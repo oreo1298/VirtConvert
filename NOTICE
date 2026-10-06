@@ -10,10 +10,14 @@ Tools it runs (not bundled)
 
 * qemu-img from the QEMU project, GPL-2.0-or-later, https://www.qemu.org — writes the converted
   disk images and compares them with their sources.
+* The distribution's mkfs programs, to format new disks: mkntfs (ntfs-3g, GPL-2.0-or-later),
+  mkfs.exfat (exfatprogs, GPL-2.0-or-later), mkfs.fat (dosfstools, GPL-3.0-or-later), mkfs.ext4
+  (e2fsprogs, GPL-2.0), mkfs.btrfs (btrfs-progs, GPL-2.0) and mkfs.xfs (xfsprogs, GPL-2.0).
 
 VertConvert&Create reads VHD, VHDX and VDI headers and differencing images itself, following the
 published specifications (Microsoft "Virtual Hard Disk Image Format Specification" and
-[MS-VHDX], and VirtualBox's VDI layout).
+[MS-VHDX], and VirtualBox's VDI layout). It writes GPT and MBR partition tables following the UEFI
+specification, and OVA appliances following DMTF's OVF 1.0 (DSP0243).
 
 The design system of the app (theme.py, icons.py, worker.py and parts of widgets.py) is shared
 with EZP2019Linux, DiskHealth, CloneAndRecover and the other applications by the same author.

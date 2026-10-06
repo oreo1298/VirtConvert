@@ -65,12 +65,15 @@ class AboutDialog(QDialog):
         head.addLayout(text, 1)
         lay.addLayout(head)
         body = QLabel(
-            "Converts Hyper-V disks (VHD, VHDX) to formats VirtualBox uses (VDI, VMDK) and back. "
-            "Hyper-V checkpoints and VirtualBox snapshots are merged with their parents, and every "
-            "copy can be compared with its source before it is saved.<br><br>"
-            "The conversion itself is done by <b>qemu-img</b> from the QEMU project. VertConvert&amp;Create "
-            "reads the image headers, finds parents and merges differencing images itself.<br><br>"
-            "Released under the MIT license. Not affiliated with Microsoft, Oracle or VMware.")
+            "Converts virtual disks between VirtualBox, Hyper-V, VMware and QEMU/KVM (VDI, VMDK, VHD, VHDX, "
+            "QCOW2, QED, OVA, raw) and creates new ones, empty or formatted. Hyper-V checkpoints and "
+            "VirtualBox snapshots are merged with their parents, and every copy can be compared with its "
+            "source before it is saved.<br><br>"
+            "The disks are written by <b>qemu-img</b> from the QEMU project and formatted by your "
+            "distribution's mkfs programs. VertConvert&amp;Create reads the image headers, finds parents, "
+            "merges differencing images and lays out new disks itself. It was called VirtConvert before "
+            "version 1.1.<br><br>"
+            "Released under the MIT license. Not affiliated with Microsoft, Oracle or Broadcom/VMware.")
         body.setWordWrap(True)
         body.setTextFormat(Qt.RichText)
         lay.addWidget(body)

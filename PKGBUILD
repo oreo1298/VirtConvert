@@ -13,14 +13,19 @@
 pkgname=vertconvert
 pkgver=1.1.0
 pkgrel=1
-pkgdesc="Convert Hyper-V disks (VHD, VHDX) for VirtualBox (VDI, VMDK) and back, checkpoints included"
+pkgdesc="Convert and create virtual disks: VDI, VMDK, VHD, VHDX, QCOW2, OVA and more, checkpoints included"
 arch=('any')
 url="https://github.com/oreo1298/VirtConvert"
 license=('MIT')
 depends=('python' 'pyside6' 'qt6-svg' 'qt6-wayland' 'qemu-img')
 makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel')
 checkdepends=('python-pytest')
-optdepends=('virtualbox: run the converted disks')
+optdepends=('virtualbox: run the converted disks'
+            'dosfstools: new disks formatted with FAT32'
+            'exfatprogs: new disks formatted with exFAT'
+            'ntfs-3g: new disks formatted with NTFS'
+            'btrfs-progs: new disks formatted with Btrfs'
+            'xfsprogs: new disks formatted with XFS')
 provides=('virtconvert')
 conflicts=('virtconvert')
 replaces=('virtconvert')

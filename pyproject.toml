@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vertconvert"
 dynamic = ["version"]
-description = "Convert Hyper-V disks (VHD, VHDX) for VirtualBox (VDI, VMDK) and back, checkpoints and snapshots included"
+description = "Convert and create virtual disks for VirtualBox, Hyper-V, VMware and QEMU/KVM: VDI, VMDK, VHD, VHDX, QCOW2, OVA and more"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

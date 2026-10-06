@@ -36,6 +36,14 @@ vertconvert convert -q -o back.vhdx disk.vdi  # -> back to Hyper-V
 vertconvert verify -q disk.vhdx back.vhdx
 vertconvert convert -q -t azure -o azure.vhd disk.vdi
 
+echo "== new disks"
+vertconvert create -q /tmp/empty.vhdx -s 100G
+vertconvert create -q /tmp/data.vdi -s 1G --fs ext4 -L Data
+vertconvert info /tmp/data.vdi | grep -q "GPT, 1 partition"
+for fs in fat32 ntfs exfat; do
+  vertconvert create -q "/tmp/$fs.vmdk" -s 256M --fs "$fs" || echo "(no $fs here)"
+done
+
 echo "== the app loads"
 if [ "${REQUIRE_GUI:-1}" = 1 ]; then
   QT_QPA_PLATFORM=offscreen /opt/vertconvert/venv/bin/python -c \

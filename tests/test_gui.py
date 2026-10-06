@@ -2,6 +2,7 @@
 
 import os
 import time
+from pathlib import Path
 
 import pytest
 
@@ -222,3 +223,110 @@ def test_replacing_one_file_is_not_a_global_setting(window, images, monkeypatch)
     item = window.model.items[0]
     assert item.overwrite and not window.overwrite_chk.isChecked()
     assert item.state == mw.READY and any("will be replaced" in w for w in item.plan.warnings)
+
+
+def make_appliance(folder, qemu, disks):
+    """An OVA with DISKS (name -> raw bytes) as stream-optimized VMDKs."""
+    import io
+    import tarfile
+    members = {}
+    for name, data in disks.items():
+        raw = folder / f"{name}.raw"
+        raw.write_bytes(data)
+        qemu.check_run(["convert", "-f", "raw", "-O", "vmdk", "-o", "subformat=streamOptimized", str(raw),
+                        str(folder / name)], "test")
+        members[name] = (folder / name).read_bytes()
+        raw.unlink()
+        (folder / name).unlink()
+    refs = "".join(f'<File ovf:href="{n}" ovf:id="f{i}"/>' for i, n in enumerate(members))
+    items = "".join(f'<Disk ovf:capacity="{len(d)}" ovf:diskId="d{i}" ovf:fileRef="f{i}"/>'
+                    for i, d in enumerate(disks.values()))
+    ovf = (f'<Envelope xmlns="http://schemas.dmtf.org/ovf/envelope/1" xmlns:ovf="http://schemas.dmtf.org/ovf/'
+           f'envelope/1"><References>{refs}</References><DiskSection>{items}</DiskSection></Envelope>').encode()
+    path = folder / "App.ova"
+    with tarfile.open(path, "w", format=tarfile.USTAR_FORMAT) as tar:
+        for name, data in [("App.ovf", ovf), *members.items()]:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return path
+
+
+def test_appliance_disks_are_items(window, qemu, tmp_path):
+    disks = {"system.vmdk": os.urandom(MIB) + bytes(MIB), "data.vmdk": bytes(MIB) + os.urandom(MIB)}
+    path = make_appliance(tmp_path, qemu, disks)
+    add(window, path)
+    add(window, path)                                        # again: nothing new
+    items = window.model.items
+    assert [i.name for i in items] == ["App.ova › system.vmdk", "App.ova › data.vmdk"]
+    assert [i.from_label for i in items] == ["VMDK in OVA"] * 2
+    assert [i.output.name for i in items] == ["App-system.vhdx", "App-data.vhdx"]   # VMware/VirtualBox -> Hyper-V
+    window.convert_all()
+    wait_for(lambda: all(i.state in (mw.DONE, mw.FAILED) for i in items) and not window.runner.busy)
+    assert [i.state for i in items] == [mw.DONE, mw.DONE], [i.message for i in items]
+    for item, data in zip(items, disks.values()):
+        out = tmp_path / "check.raw"
+        qemu.check_run(["convert", "-O", "raw", str(item.output), str(out)], "test")
+        assert out.read_bytes() == data
+
+
+def test_vmdk_variants_and_memory(window, images, qemu):
+    add(window, images / "Win.vhdx")
+    window.table.selectRow(0)
+    pump()
+    window.fmt_seg.set_value("vmdk")
+    window._target_edited()
+    window.vmdk_seg.set_value("fixed")
+    window.split_chk.setChecked(True)                   # emits: the picker reports the change
+    item = window.model.items[0]
+    assert item.target.label == "VMDK (preallocated, 2 GB files)"
+    assert window.settings.value("target_vbox") == "vmdk:fixed+split"
+    window.vmdk_seg.set_value("stream")
+    window.picker._edited()
+    assert item.target.stream and not item.target.split and not window.split_chk.isEnabled()
+    # a QCOW2 disk goes to VirtualBox too, and gets the remembered choice; a VMDK goes to Hyper-V
+    qcow = images / "kvm.qcow2"
+    qemu.check_run(["create", "-q", "-f", "qcow2", str(qcow), "4M"], "test")
+    qemu.check_run(["create", "-q", "-f", "vmdk", str(images / "ws.vmdk"), "4M"], "test")
+    add(window, qcow, images / "ws.vmdk")
+    assert window.model.items[1].target.label == "VMDK (stream-optimized)"
+    assert window.model.items[2].target.format is F.VHDX
+
+
+def test_new_disk(window, tmp_path, monkeypatch):
+    from vertconvert.gui import create_dialog
+
+    def fill_in(dialog):
+        dialog.picker.fmt_seg.set_value("vhdx")
+        dialog.picker._edited()
+        dialog._format_changed()
+        assert dialog.out_edit.text().endswith(".vhdx")
+        dialog.size_spin.setValue(300)
+        dialog.unit_box.setCurrentIndex(0)              # MB
+        dialog.contents_seg.set_value("formatted")
+        dialog._contents_changed()
+        dialog.fs_box.setCurrentIndex(dialog.fs_box.findData("exfat" if mw.system.find_program("mkfs.exfat")
+                                                              else "ext4"))
+        dialog.label_edit.setText("Shared")
+        dialog.out_edit.setText(str(tmp_path / "Shared.vhdx"))
+        dialog._replan()
+        assert dialog.create_btn.isEnabled(), dialog.plan.errors
+        dialog._create()
+        return dialog.result()
+
+    monkeypatch.setattr(create_dialog.CreateDiskDialog, "exec", fill_in)
+    window.new_disk()
+    wait_for(lambda: not window.runner.busy)
+    info = probe(tmp_path / "Shared.vhdx")
+    assert info.ok and info.format is F.VHDX and info.virtual_size == 300 * MIB
+    assert window.settings.value("create/target") == "vhdx"
+    assert window.settings.value("create/contents") == "formatted"
+    # the dialog starts from the last choices, next to the last disk, with a free name
+    dialog = create_dialog.CreateDiskDialog(window, window.qemu, window.settings)
+    assert dialog.picker.target().format is F.VHDX and dialog.contents_seg.value() == "formatted"
+    assert Path(dialog.out_edit.text()) == tmp_path / "New disk.vhdx"
+    dialog._replan()
+    assert dialog.plan.ok
+    dialog.out_edit.setText(str(tmp_path / "Shared.vhdx"))
+    dialog._replan()
+    assert not dialog.create_btn.isEnabled() and "already exists" in dialog.banner.text()
