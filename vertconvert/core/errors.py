@@ -10,7 +10,7 @@ class ImageFormatError(ConvertError):
 
 
 class UnsupportedImageError(ConvertError):
-    """A valid image that uses a feature VirtConvert cannot read."""
+    """A valid image that uses a feature VertConvert&Create cannot read."""
 
 
 class ParentNotFoundError(ConvertError):
@@ -21,7 +21,7 @@ class QemuImgMissingError(ConvertError):
     def __init__(self, message: str | None = None):
         super().__init__(message or (
             "qemu-img was not found. It does the actual conversion; install it with your "
-            "package manager (run 'virtconvert doctor' to see the command for your system)."))
+            "package manager (run 'vertconvert doctor' to see the command for your system)."))
 
 
 class QemuImgError(ConvertError):

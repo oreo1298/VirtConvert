@@ -1,4 +1,4 @@
-# Maintainer: VirtConvert contributors
+# Maintainer: VertConvert&Create contributors
 #
 # Arch Linux and Arch-based distributions (CachyOS, EndeavourOS, Manjaro, Garuda, ...).
 # Builds the checkout this file sits in:
@@ -8,10 +8,10 @@
 #   makepkg -si
 #
 # Update:     git pull && makepkg -sif
-# Uninstall:  sudo pacman -Rns virtconvert
+# Uninstall:  sudo pacman -Rns vertconvert
 
-pkgname=virtconvert
-pkgver=1.0.0
+pkgname=vertconvert
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="Convert Hyper-V disks (VHD, VHDX) for VirtualBox (VDI, VMDK) and back, checkpoints included"
 arch=('any')
@@ -21,7 +21,10 @@ depends=('python' 'pyside6' 'qt6-svg' 'qt6-wayland' 'qemu-img')
 makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel')
 checkdepends=('python-pytest')
 optdepends=('virtualbox: run the converted disks')
-install=virtconvert.install
+provides=('virtconvert')
+conflicts=('virtconvert')
+replaces=('virtconvert')
+install=vertconvert.install
 source=()
 sha256sums=()
 
@@ -64,12 +67,12 @@ check() {
 package() {
   cd "$srcdir/$pkgname"
   python -m installer --destdir="$pkgdir" dist/*.whl
-  install -Dm644 data/io.github.oreo1298.VirtConvert.desktop \
-    "$pkgdir/usr/share/applications/io.github.oreo1298.VirtConvert.desktop"
-  install -Dm644 data/io.github.oreo1298.VirtConvert.metainfo.xml \
-    "$pkgdir/usr/share/metainfo/io.github.oreo1298.VirtConvert.metainfo.xml"
-  install -Dm644 virtconvert/data/virtconvert.svg \
-    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.oreo1298.VirtConvert.svg"
+  install -Dm644 data/io.github.oreo1298.VertConvertCreate.desktop \
+    "$pkgdir/usr/share/applications/io.github.oreo1298.VertConvertCreate.desktop"
+  install -Dm644 data/io.github.oreo1298.VertConvertCreate.metainfo.xml \
+    "$pkgdir/usr/share/metainfo/io.github.oreo1298.VertConvertCreate.metainfo.xml"
+  install -Dm644 vertconvert/data/vertconvert.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.oreo1298.VertConvertCreate.svg"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 NOTICE "$pkgdir/usr/share/licenses/$pkgname/NOTICE"
   install -Dm644 README.md docs/HOW-IT-WORKS.md -t "$pkgdir/usr/share/doc/$pkgname/"

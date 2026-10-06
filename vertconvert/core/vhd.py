@@ -90,7 +90,7 @@ class Footer:
 
         Virtual PC showed disks at their CHS geometry size, which is a few KB
         smaller; qemu-img does the same for files from unknown programs (and
-        would cut off the end of VirtualBox-made VHDs). VirtConvert always uses
+        would cut off the end of VirtualBox-made VHDs). VertConvert&Create always uses
         the full size and tells qemu-img to do so (force_size_calc).
         """
         return self.current_size

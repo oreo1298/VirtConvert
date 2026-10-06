@@ -129,7 +129,7 @@ def doctor() -> list[Check]:
     checks: list[Check] = []
     v = sys.version_info
     checks.append(Check("Python", v >= (3, 10), f"{v.major}.{v.minor}.{v.micro}",
-                        "VirtConvert needs Python 3.10 or newer."))
+                        "VertConvert&Create needs Python 3.10 or newer."))
     qemu = QemuImg.find()
     if qemu is None:
         checks.append(Check("qemu-img", False, "not found", qemu_install_command()))

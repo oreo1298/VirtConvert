@@ -257,7 +257,7 @@ def cmd_formats(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    print(f"VirtConvert {__version__} on {system.distro_name()}")
+    print(f"VertConvert&Create {__version__} on {system.distro_name()}")
     problems = 0
     for check in system.doctor():
         mark = "✓" if check.ok else ("·" if check.optional else "✕")
@@ -275,7 +275,7 @@ def cmd_doctor(args) -> int:
             return 0 if ok else 1
     elif QemuImg.find() is None:
         print(f"\nInstall qemu-img with:  {system.qemu_install_command()}")
-        print("or run:  virtconvert doctor --install-qemu")
+        print("or run:  vertconvert doctor --install-qemu")
     return 1 if problems else 0
 
 
@@ -283,19 +283,19 @@ def cmd_doctor(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
-        prog="virtconvert",
+        prog="vertconvert",
         description="Convert Hyper-V disks (VHD, VHDX) to VirtualBox (VDI, VMDK) and back. "
                     "Without a command the app starts.",
         epilog="Examples:\n"
-               "  virtconvert                          open the app\n"
-               "  virtconvert info disk.vhdx           show what an image contains\n"
-               "  virtconvert convert disk.vhdx        -> disk.vdi for VirtualBox\n"
-               "  virtconvert convert disk.vdi         -> disk.vhdx for Hyper-V\n"
-               "  virtconvert convert -t vmdk *.vhdx   several at once\n"
-               "  virtconvert convert -t azure os.vdi  fixed VHD for Azure\n"
-               "  virtconvert verify disk.vhdx disk.vdi\n",
+               "  vertconvert                          open the app\n"
+               "  vertconvert info disk.vhdx           show what an image contains\n"
+               "  vertconvert convert disk.vhdx        -> disk.vdi for VirtualBox\n"
+               "  vertconvert convert disk.vdi         -> disk.vhdx for Hyper-V\n"
+               "  vertconvert convert -t vmdk *.vhdx   several at once\n"
+               "  vertconvert convert -t azure os.vdi  fixed VHD for Azure\n"
+               "  vertconvert verify disk.vhdx disk.vdi\n",
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--version", action="version", version=f"virtconvert {__version__}")
+    ap.add_argument("--version", action="version", version=f"vertconvert {__version__}")
     sub = ap.add_subparsers(dest="command", metavar="COMMAND")
 
     p = sub.add_parser("gui", help="open the app (the default)")
@@ -344,7 +344,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("formats", help="list the formats and shortcuts")
     p.set_defaults(func=cmd_formats)
 
-    p = sub.add_parser("doctor", help="check that everything VirtConvert needs is installed")
+    p = sub.add_parser("doctor", help="check that everything VertConvert&Create needs is installed")
     p.add_argument("--install-qemu", action="store_true",
                    help="install qemu-img with your package manager (asks for your password)")
     p.set_defaults(func=cmd_doctor)
@@ -352,7 +352,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _split_files(argv: list[str]) -> tuple[list[str], list[str]]:
-    """`virtconvert disk.vhdx` opens the app with the file; tell files from commands."""
+    """`vertconvert disk.vhdx` opens the app with the file; tell files from commands."""
     if argv and argv[0] not in COMMANDS and not argv[0].startswith("-"):
         files = [a for a in argv if not a.startswith("-")]
         if all(os.path.exists(f) for f in files):
@@ -371,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
             from .gui.app import run_gui
         except ImportError as exc:
             print(f"The app needs PySide6 (Qt 6), which isn't available: {exc}\n"
-                  "Install it (see the README), or use the commands: virtconvert --help",
+                  "Install it (see the README), or use the commands: vertconvert --help",
                   file=sys.stderr)
             return 1
         return run_gui(files)

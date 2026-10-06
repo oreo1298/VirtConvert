@@ -276,7 +276,7 @@ class ThemeManager(QObject):
         self.mode = "system"
         self.palette: Palette = DARK
         cache = os.environ.get("XDG_CACHE_HOME") or os.path.join(Path.home(), ".cache")
-        self._asset_dir = Path(cache) / "virtconvert" / "theme"
+        self._asset_dir = Path(cache) / "vertconvert" / "theme"
 
     def resolve(self, mode: str) -> Palette:
         if mode == "system":
@@ -329,7 +329,7 @@ class ThemeManager(QObject):
         try:
             paths = write(self._asset_dir / p.name)
         except OSError:
-            self._asset_dir = Path(tempfile.mkdtemp(prefix="virtconvert-theme-"))
+            self._asset_dir = Path(tempfile.mkdtemp(prefix="vertconvert-theme-"))
             paths = write(self._asset_dir / p.name)
         return {k: v.as_posix() for k, v in paths.items()}
 

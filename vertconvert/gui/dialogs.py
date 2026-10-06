@@ -68,7 +68,7 @@ class AboutDialog(QDialog):
             "Converts Hyper-V disks (VHD, VHDX) to formats VirtualBox uses (VDI, VMDK) and back. "
             "Hyper-V checkpoints and VirtualBox snapshots are merged with their parents, and every "
             "copy can be compared with its source before it is saved.<br><br>"
-            "The conversion itself is done by <b>qemu-img</b> from the QEMU project. VirtConvert "
+            "The conversion itself is done by <b>qemu-img</b> from the QEMU project. VertConvert&amp;Create "
             "reads the image headers, finds parents and merges differencing images itself.<br><br>"
             "Released under the MIT license. Not affiliated with Microsoft, Oracle or VMware.")
         body.setWordWrap(True)
@@ -101,7 +101,7 @@ class QemuMissingDialog(QDialog):
         title.setFont(scaled_font(title, 1.25, bold=True))
         lay.addWidget(title)
         text = QLabel(
-            "VirtConvert uses qemu-img from the QEMU project to write the converted disks. "
+            "VertConvert&Create uses qemu-img from the QEMU project to write the converted disks. "
             f"It is a small package on {system.distro_name()}. Install it with:")
         text.setWordWrap(True)
         lay.addWidget(text)
@@ -114,7 +114,7 @@ class QemuMissingDialog(QDialog):
         row.addWidget(self.command, 1)
         row.addWidget(copy)
         lay.addLayout(row)
-        hint = QLabel("Or let VirtConvert run it for you (it asks for your password).")
+        hint = QLabel("Or let VertConvert&Create run it for you (it asks for your password).")
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
         lay.addWidget(hint)

@@ -31,9 +31,9 @@ jobs:
         run: python -m pytest -q
       - name: Command-line smoke test
         run: |
-          virtconvert --version && virtconvert --help > /dev/null
-          virtconvert formats
-          virtconvert doctor
+          vertconvert --version && vertconvert --help > /dev/null
+          vertconvert formats
+          vertconvert doctor
 
   references:
     # compare with independent implementations: VirtualBox and libvhdi
@@ -55,18 +55,18 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install ruff
-      - run: ruff check virtconvert tests tools
+      - run: ruff check vertconvert tests tools
       - name: Shell scripts
         run: |
-          for f in packaging/install.sh packaging/update.sh packaging/uninstall.sh virtconvert.sh \
+          for f in packaging/install.sh packaging/update.sh packaging/uninstall.sh vertconvert.sh \
                    tools/installer-smoke.sh; do bash -n "$f"; done
       - name: Desktop entry and AppStream metadata
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends desktop-file-utils appstream
-          desktop-file-validate data/io.github.oreo1298.VirtConvert.desktop
-          appstreamcli validate --no-net --pedantic data/io.github.oreo1298.VirtConvert.metainfo.xml || \
-            appstreamcli validate --no-net data/io.github.oreo1298.VirtConvert.metainfo.xml
+          desktop-file-validate data/io.github.oreo1298.VertConvertCreate.desktop
+          appstreamcli validate --no-net --pedantic data/io.github.oreo1298.VertConvertCreate.metainfo.xml || \
+            appstreamcli validate --no-net data/io.github.oreo1298.VertConvertCreate.metainfo.xml
 
   arch:
     runs-on: ubuntu-latest
@@ -80,16 +80,16 @@ jobs:
           useradd -m builder
           chown -R builder: "$GITHUB_WORKSPACE"
           su builder -c "cd '$GITHUB_WORKSPACE' && makepkg --noconfirm"
-          pacman -U --noconfirm "$GITHUB_WORKSPACE"/virtconvert-*.pkg.tar.zst
-          virtconvert --version
-          virtconvert doctor
-          test -f /usr/share/applications/io.github.oreo1298.VirtConvert.desktop
-          test -f /usr/share/icons/hicolor/scalable/apps/io.github.oreo1298.VirtConvert.svg
-          QT_QPA_PLATFORM=offscreen python -c "import virtconvert.gui.main_window; print('import OK')"
+          pacman -U --noconfirm "$GITHUB_WORKSPACE"/vertconvert-*.pkg.tar.zst
+          vertconvert --version
+          vertconvert doctor
+          test -f /usr/share/applications/io.github.oreo1298.VertConvertCreate.desktop
+          test -f /usr/share/icons/hicolor/scalable/apps/io.github.oreo1298.VertConvertCreate.svg
+          QT_QPA_PLATFORM=offscreen python -c "import vertconvert.gui.main_window; print('import OK')"
           su builder -c "cd '$GITHUB_WORKSPACE' && makepkg -f --noconfirm"
-          pacman -U --noconfirm "$GITHUB_WORKSPACE"/virtconvert-*.pkg.tar.zst
-          pacman -Rns --noconfirm virtconvert
-          test ! -e /usr/bin/virtconvert
+          pacman -U --noconfirm "$GITHUB_WORKSPACE"/vertconvert-*.pkg.tar.zst
+          pacman -Rns --noconfirm vertconvert
+          test ! -e /usr/bin/vertconvert
 
   installer:
     # packaging/install.sh, update.sh and uninstall.sh on other distributions

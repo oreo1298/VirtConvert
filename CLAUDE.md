@@ -1,12 +1,12 @@
-# VirtConvert — repository notes for Claude
+# VertConvert&Create — repository notes for Claude
 
-Converts Hyper-V disks (VHD, VHDX, checkpoints) to VirtualBox formats (VDI, VMDK) and back: the `virtconvert`
-command (no arguments → the PySide6 app). Python ≥ 3.10. qemu-img does the copying; VirtConvert reads headers,
+Converts Hyper-V disks (VHD, VHDX, checkpoints) to VirtualBox formats (VDI, VMDK) and back: the `vertconvert`
+command (no arguments → the PySide6 app). Python ≥ 3.10. qemu-img does the copying; VertConvert&Create reads headers,
 merges differencing chains and checks results. Primary target Arch Linux (PKGBUILD); `packaging/install.sh`
 covers the other distributions. Design notes: docs/HOW-IT-WORKS.md.
 
 ## Layout
-- `virtconvert/core/` — stdlib only, no Qt imports:
+- `vertconvert/core/` — stdlib only, no Qt imports:
   `formats.py` (Format table, defaults: Hyper-V formats → VDI, others → VHDX), `probe.py` (detect format,
   read headers → `ImageInfo`), `vhd.py` / `vhdx.py` / `vdi.py` (headers + `Layer.map()` block maps,
   differencing included), `layers.py` (DATA/ZERO/PARENT extents, `RawLayer`), `chain.py` (find parents,
@@ -14,10 +14,10 @@ covers the other distributions. Design notes: docs/HOW-IT-WORKS.md.
   progress, cancel), `images.py` (`inspect_image` = probe + chain + partitions), `partitions.py`,
   `convert.py` (`Target`, `Job`, `make_plan`, `execute`, `verify_images`, `repair`), `system.py` (doctor,
   distro package names for qemu-img).
-- `virtconvert/gui/` — PySide6. `main_window.py` (toolbar, Image / Convert to / Options cards, queue table,
+- `vertconvert/gui/` — PySide6. `main_window.py` (toolbar, Image / Convert to / Options cards, queue table,
   Activity log, status bar), `queue.py` (`Item`, `QueueModel`, `StatusDelegate`), `dialogs.py`; `theme.py`,
   `icons.py`, `widgets.py`, `worker.py` are the suite's shared design system (EZP2019Linux).
-- `virtconvert/cli.py` — sub-commands info/convert/verify/repair/formats/doctor.
+- `vertconvert/cli.py` — sub-commands info/convert/verify/repair/formats/doctor.
 - `tests/imagewriter.py` writes test images from the specs; `tools/screenshot.py` makes docs/screenshots;
   `tools/installer-smoke.sh` is the per-distro installer test CI runs in containers.
 
@@ -45,6 +45,6 @@ python -m venv --system-site-packages .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 make test            # QT_QPA_PLATFORM=offscreen pytest (needs qemu-img; VirtualBox/libvhdi tests skip without them)
 make lint            # ruff + bash -n
-./virtconvert.sh     # the app
-virtconvert info some.vhdx
+./vertconvert.sh     # the app
+vertconvert info some.vhdx
 ```

@@ -1,7 +1,7 @@
 """Stroke icons drawn for this app (24×24, rendered in the theme's colours).
 
 The line icons of the EZP2019Linux / DiskHealth / CloneAndRecover suite, plus a few of
-VirtConvert's own (convert, merge, drop).
+VertConvert&Create's own (convert, merge, drop).
 """
 
 from __future__ import annotations

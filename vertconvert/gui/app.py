@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -10,12 +11,12 @@ from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QGuiApplication, QIcon
 from PySide6.QtWidgets import QApplication
 
-from .. import APP_ID, APP_NAME, DESKTOP_ID, __version__
+from .. import APP_ID, APP_NAME, DESKTOP_ID, OLD_APP_ID, __version__
 from ..core.qemu import QemuImg
 from .main_window import MainWindow
 from .theme import theme
 
-ICON_PATH = Path(__file__).resolve().parent.parent / "data" / "virtconvert.svg"
+ICON_PATH = Path(__file__).resolve().parent.parent / "data" / "vertconvert.svg"
 
 
 def app_icon() -> QIcon:
@@ -23,6 +24,19 @@ def app_icon() -> QIcon:
     if not themed.isNull():
         return themed
     return QIcon(str(ICON_PATH))
+
+
+def take_over_old_settings() -> None:
+    """Keep the settings of VirtConvert (the name before 1.1) the first time."""
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    old = config / OLD_APP_ID / f"{OLD_APP_ID}.conf"
+    new = config / APP_ID / f"{APP_ID}.conf"
+    try:
+        if old.is_file() and not new.exists():
+            new.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(old, new)
+    except OSError:
+        pass
 
 
 def run_gui(files: list[str] | None = None, argv: list[str] | None = None) -> int:
@@ -36,8 +50,10 @@ def run_gui(files: list[str] | None = None, argv: list[str] | None = None) -> in
     app = QApplication.instance() or QApplication(argv if argv is not None else sys.argv[:1])
     app.setWindowIcon(app_icon())
 
+    take_over_old_settings()
     settings = QSettings(APP_ID, APP_ID)
-    mode = os.environ.get("VIRTCONVERT_THEME") or str(settings.value("theme", "system"))
+    mode = (os.environ.get("VERTCONVERT_THEME") or os.environ.get("VIRTCONVERT_THEME")
+            or str(settings.value("theme", "system")))
     theme.apply(app, mode)
     hints = QGuiApplication.styleHints()
     if hasattr(hints, "colorSchemeChanged"):

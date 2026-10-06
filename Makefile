@@ -1,4 +1,4 @@
-# VirtConvert — convenience targets.
+# VertConvert&Create — convenience targets.
 # Arch-based distributions: use the PKGBUILD instead (makepkg -si).
 
 PYTHON ?= python3
@@ -6,7 +6,7 @@ PYTHON ?= python3
 .PHONY: help run install install-user update uninstall test test-all lint screenshots dist clean
 
 help:
-	@echo "VirtConvert make targets:"
+	@echo "VertConvert&Create make targets:"
 	@echo "  make run            Start the app from this folder"
 	@echo "  make install        Install system-wide (sudo)"
 	@echo "  make install-user   Install for your user only"
@@ -18,7 +18,7 @@ help:
 	@echo "  make dist           Build a wheel and sdist"
 
 run:
-	./virtconvert.sh
+	./vertconvert.sh
 
 install:
 	./packaging/install.sh
@@ -36,8 +36,8 @@ test:
 	QT_QPA_PLATFORM=offscreen $(PYTHON) -m pytest -q
 
 lint:
-	ruff check virtconvert tests tools
-	bash -n packaging/install.sh && bash -n packaging/update.sh && bash -n packaging/uninstall.sh && bash -n virtconvert.sh
+	ruff check vertconvert tests tools
+	bash -n packaging/install.sh && bash -n packaging/update.sh && bash -n packaging/uninstall.sh && bash -n vertconvert.sh
 
 screenshots:
 	for t in dark light; do $(PYTHON) tools/screenshot.py docs/screenshots --theme $$t; done

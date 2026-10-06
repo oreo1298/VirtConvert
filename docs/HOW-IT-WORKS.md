@@ -1,6 +1,6 @@
-# How VirtConvert works
+# How VertConvert&Create works
 
-VirtConvert is a careful front end to `qemu-img`: it decides what the source is, finds everything
+VertConvert&Create is a careful front end to `qemu-img`: it decides what the source is, finds everything
 the source depends on, decides how to write the target, lets qemu-img do the copying, and checks
 the result. This page describes each step and why it is there.
 
@@ -8,7 +8,7 @@ the result. This page describes each step and why it is there.
 
 qemu-img can guess formats, but it guesses from the first bytes of a file only. A **fixed VHD**
 is raw data followed by a 512-byte footer, so qemu-img takes it for a raw image (and would then
-copy the footer into the disk). VirtConvert therefore looks for:
+copy the footer into the disk). VertConvert&Create therefore looks for:
 
 | Format | Signature |
 |---|---|
@@ -33,14 +33,14 @@ a damaged VHDX header copy, a VHDX log that still has to be applied, a cut-off f
 A VHD footer holds both a byte size (`current size`) and a CHS geometry. Virtual PC showed disks
 at the geometry's size; Hyper-V, VirtualBox and everything newer use the byte size. qemu-img uses
 the geometry for every file not made by a program on its short list, and so cuts the last few KB
-off VHDs made by VirtualBox — where a GPT disk keeps its backup partition table. VirtConvert always
+off VHDs made by VirtualBox — where a GPT disk keeps its backup partition table. VertConvert&Create always
 uses the byte size and tells qemu-img to do the same (`force_size_calc=current_size`). VHD files
-VirtConvert writes are created with `force_size=on`, so their size is exact (Hyper-V and Azure
+VertConvert&Create writes are created with `force_size=on`, so their size is exact (Hyper-V and Azure
 need that).
 
 ### Partition table and boot mode (`core/partitions.py`)
 
-The first 128 KB of the virtual disk are read (by VirtConvert's own readers, or `qemu-img dd`)
+The first 128 KB of the virtual disk are read (by VertConvert&Create's own readers, or `qemu-img dd`)
 and checked for a GPT (at 512-byte and 4 KB sectors) or an MBR. A GPT disk boots with UEFI
 (VirtualBox: *Enable EFI*; Hyper-V: generation 2, which needs VHDX), an MBR disk with BIOS
 (generation 1). A GPT disk with a *BIOS boot* partition boots either way.
@@ -55,7 +55,7 @@ disk that changed since its parent. qemu-img can't read these chains:
 - a **differencing VHDX** is refused ("Invalid argument");
 - a **differencing VDI** is refused.
 
-VirtConvert implements the block maps of the three formats itself (read-only):
+VertConvert&Create implements the block maps of the three formats itself (read-only):
 
 - **VHD**: a big-endian block allocation table; each allocated block starts with a sector bitmap
   (most significant bit first). In a differencing disk, a set bit means the sector is in this
@@ -91,16 +91,16 @@ Each differencing image names its parent by an ID and, for VHD and VHDX, by path
   written) and `relative_path`, `absolute_win32_path`, `volume_path`;
 - VDI: only the parent's UUID; VirtualBox keeps the paths in the VM's `.vbox` file.
 
-VirtConvert tries, in order: files the user pointed at, the stored paths (Windows paths are
+VertConvert&Create tries, in order: files the user pointed at, the stored paths (Windows paths are
 turned into Linux ones and matched without regard to case, relative to the child), the
 `.vbox` file of the VM, and finally every image of the same format next to the child, in its
 parent folder and in `Snapshots`. A candidate is only accepted if its ID matches. A file with the
 right name but a different ID means the parent was modified after the checkpoint was taken;
-merging would give a damaged disk, so VirtConvert stops (the user can override this).
+merging would give a damaged disk, so VertConvert&Create stops (the user can override this).
 
 ### Feeding the merged disk to qemu-img (`core/nbd.py`)
 
-Rather than writing a temporary copy, VirtConvert starts a small read-only **NBD server** on a
+Rather than writing a temporary copy, VertConvert&Create starts a small read-only **NBD server** on a
 Unix socket in a private temporary folder and gives qemu-img
 `{"driver": "raw", "file": {"driver": "nbd", "server": {"type": "unix", "path": …}}}` as the
 source. The server implements the fixed newstyle handshake (`NBD_OPT_GO`, `NBD_OPT_INFO`,
@@ -138,7 +138,7 @@ inside it under its final name (a VMDK names its own file in its descriptor), us
 line (cancelling stops the process group). Two runs never share a work folder. Then:
 
 1. **VHDX fix-up**: qemu-img leaves the *required* flag of the BAT and metadata regions clear,
-   which [MS-VHDX] asks to be set; VirtualBox refuses such files. VirtConvert sets the flags and
+   which [MS-VHDX] asks to be set; VirtualBox refuses such files. VertConvert&Create sets the flags and
    recomputes the region table checksums.
 2. The file is flushed to disk (`fsync`).
 3. If the source (or a parent) changed while it was being read, the copy is thrown away: the VM
@@ -162,8 +162,8 @@ which opens the file for writing and so applies the log, as Hyper-V does when it
 - `tests/test_readers.py` reads them back; `tests/test_convert.py` converts in every direction
   and reads the results back through qemu-img.
 - `tests/test_references.py` compares with independent implementations: VirtualBox reads every
-  format VirtConvert writes and gives the same bytes; merged VHD and VDI chains equal VirtualBox's
+  format VertConvert&Create writes and gives the same bytes; merged VHD and VDI chains equal VirtualBox's
   reading of them, including a differencing VHD written by VirtualBox itself; merged VHDX chains
   equal libvhdi's.
 - `tests/test_gui.py` drives the app offscreen; `tools/installer-smoke.sh` installs, uses,
-  updates and removes VirtConvert inside containers of other distributions (CI).
+  updates and removes VertConvert&Create inside containers of other distributions (CI).

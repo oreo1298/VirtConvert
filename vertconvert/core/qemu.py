@@ -82,7 +82,8 @@ class QemuImg:
 
     @classmethod
     def find(cls) -> "QemuImg | None":
-        exe = os.environ.get("VIRTCONVERT_QEMU_IMG") or shutil.which("qemu-img")
+        exe = (os.environ.get("VERTCONVERT_QEMU_IMG") or os.environ.get("VIRTCONVERT_QEMU_IMG")
+               or shutil.which("qemu-img"))
         if not exe:
             for candidate in ("/usr/bin/qemu-img", "/usr/local/bin/qemu-img", "/run/current-system/sw/bin/qemu-img"):
                 if os.access(candidate, os.X_OK):
@@ -224,7 +225,7 @@ class QemuImg:
 
     def read_head(self, image_spec: str, length: int) -> bytes:
         """The first LENGTH bytes of the virtual disk."""
-        with tempfile.TemporaryDirectory(prefix="virtconvert-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="vertconvert-") as tmp:
             out = os.path.join(tmp, "head.raw")
             block = 64 * 1024
             count = max(1, -(-length // block))

@@ -20,16 +20,16 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("XDG_CONFIG_HOME", tempfile.mkdtemp(prefix="virtconvert-shot-"))
+os.environ.setdefault("XDG_CONFIG_HOME", tempfile.mkdtemp(prefix="vertconvert-shot-"))
 
 import imagewriter as W  # noqa: E402
 from PySide6.QtCore import QCoreApplication  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-import virtconvert.gui.main_window as mw  # noqa: E402
-from virtconvert.core.qemu import QemuImg  # noqa: E402
-from virtconvert.gui.app import app_icon  # noqa: E402
-from virtconvert.gui.theme import theme  # noqa: E402
+import vertconvert.gui.main_window as mw  # noqa: E402
+from vertconvert.core.qemu import QemuImg  # noqa: E402
+from vertconvert.gui.app import app_icon  # noqa: E402
+from vertconvert.gui.theme import theme  # noqa: E402
 
 GIB = 1 << 30
 EFI = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
@@ -104,7 +104,7 @@ def main() -> int:
     for name in ("information", "warning", "critical", "question"):
         setattr(QMessageBox, name, staticmethod(lambda *a, **k: QMessageBox.Ok))
 
-    tmp = Path(tempfile.mkdtemp(prefix="virtconvert-demo-"))
+    tmp = Path(tempfile.mkdtemp(prefix="vertconvert-demo-"))
     try:
         app = QApplication([])
         app.setWindowIcon(app_icon())

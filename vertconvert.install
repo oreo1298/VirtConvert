@@ -1,0 +1,13 @@
+post_install() {
+  echo ":: VertConvert&Create installed. Start it from your application menu, or run: vertconvert"
+  echo ":: Command line: vertconvert --help"
+}
+
+post_upgrade() {
+  post_install
+}
+
+post_remove() {
+  echo ":: Your settings in ~/.config/vertconvert were kept; delete the folder if you like."
+  echo ":: Your disk images were not touched."
+}
