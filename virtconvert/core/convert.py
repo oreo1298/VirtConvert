@@ -9,15 +9,17 @@ half-written file under the real name. Sources are only ever read.
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import shutil
+import tarfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from . import devices, ova
 from . import formats as F
-from . import ova
 from .chain import LAYERS, ChainReader
 from .errors import ConvertError, OperationCancelled, VerifyError
 from .formats import Format
@@ -114,7 +116,9 @@ class Target:
         qemu-img names them: the descriptor's name with -flat, -s001, -f001… added)."""
         if not self.multi_file:
             return [out]
-        stem, ext = (out.name[:-len(out.suffix)], out.suffix) if out.suffix else (out.name, "")
+        # like qemu-img: everything before the last dot, and the rest ("disk." -> "disk-flat.")
+        dot = out.name.rfind(".")
+        stem, ext = (out.name[:dot], out.name[dot:]) if dot >= 0 else (out.name, "")
         if not self.split:
             return [out, out.with_name(f"{stem}-flat{ext}")]
         letter = "f" if self.fixed else "s"
@@ -130,6 +134,8 @@ def parse_target(name: str, fixed: bool = False, stream: bool = False, azure: bo
         return Target(F.BY_KEY[fmt_key], fixed or p_fixed, stream or p_stream, azure or p_azure,
                       split or p_split).normalized()
     fmt = F.by_name(key)
+    if fmt is F.QCOW:
+        fmt = F.QCOW2        # nobody wants to write the old version; "qcow" meant QCOW2 before 1.1
     if fmt is None:
         raise ConvertError(f"Unknown format '{name}'. Use one of: "
                            f"{', '.join(f.key for f in F.WRITABLE)}, or "
@@ -165,6 +171,8 @@ def default_output(info: ImageInfo, target: Target, folder: Path | None = None, 
     source = info.path
     stem = info.stem
     directory = source.parent
+    if info.device:      # not next to /dev/sdb: in the current folder, or the home folder
+        directory = Path.cwd() if os.access(Path.cwd(), os.W_OK) else Path.home()
     if info.chain:
         base = info.chain[-1].path
         stem = base.stem
@@ -191,6 +199,7 @@ class Job:
     force_parent: bool = False
     candidates: list[Path] = field(default_factory=list)
     member: str | None = None        # a disk inside the OVA SOURCE
+    elevate: str = "auto"            # how to read a physical disk: pkexec, sudo, auto (devices.elevator)
 
 
 @dataclass
@@ -203,6 +212,7 @@ class Plan:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    can_verify: bool = True          # false for a physical disk in use: it changes while it's read
 
     @property
     def ok(self) -> bool:
@@ -217,6 +227,8 @@ class Plan:
         """VirtConvert&Create reads the source itself: a chain, zeros added at the end, or a VHDX
         with 4 KB sectors (qemu-img's VHDX driver only handles 512-byte sectors)."""
         info = self.info
+        if info.device:
+            return True         # a physical disk: read through the helper's file descriptor
         if info.member:
             return False        # a disk inside an OVA: qemu-img reads it in place
         return (info.needs_chain_reader or info.logical_sector != 512
@@ -283,6 +295,8 @@ def make_plan(job: Job, qemu: QemuImg | None, info: ImageInfo | None = None) -> 
         job.output = Path(os.path.abspath(job.output))
     sources = [info.path] + [p.path for p in info.chain] + info.extent_files
     check_output(plan, job.output, target, size, job.overwrite, sources)
+    if info.device:
+        _device_checks(plan)
 
     # space (an appliance is packed from a converted disk, which needs the room twice for a moment)
     check_space(plan, job.output, size if target.fixed else min(size, max(info.stored_bytes, MIB)), fmt)
@@ -307,6 +321,10 @@ def check_output(plan, out: Path, target: Target, size: int, overwrite: bool, so
         elif existing:
             plan.warnings.append(f"{', '.join(existing)} already exist{'s' if len(existing) == 1 else ''} "
                                  "and will be replaced.")
+        stale = _old_extents(out, {o.name for o in outputs}) if overwrite else []
+        if stale:
+            plan.warnings.append(f"The replaced {out.name}'s other data files ({', '.join(p.name for p in stale)}) "
+                                 "are removed too.")
     if not out.parent.is_dir():
         plan.errors.append(f"The folder {out.parent} does not exist.")
     elif not os.access(out.parent, os.W_OK):
@@ -328,10 +346,37 @@ def check_space(plan, out: Path, needed: int, fmt: Format) -> None:
                              f"{human_bytes(plan.free)} is free on that drive.")
 
 
+def _device_checks(plan: Plan) -> None:
+    """A physical disk: never save its copy on itself, and tell what being in use means."""
+    info, out = plan.info, plan.job.output
+    same = devices.disks_holding(out.parent) & devices.base_disks(info.path)
+    if same:
+        plan.errors.append(f"{out.parent} is on the disk being copied ({', '.join(sorted(same))}). Save the "
+                           "copy on another drive.")
+    if info.mountpoints:
+        plan.can_verify = False
+        shown = ", ".join(info.mountpoints[:4]) + ("…" if len(info.mountpoints) > 4 else "")
+        if any(m in devices.SYSTEM_MOUNTS for m in info.mountpoints):
+            plan.warnings.append(f"This disk holds the running system (in use at {shown}). Its files change "
+                                 "while it is copied, so the copy may be inconsistent, and it can't be compared "
+                                 "with the disk afterwards. For a reliable copy, start the computer from a live "
+                                 "USB system and copy the disk from there.")
+        else:
+            plan.warnings.append(f"The disk is in use (mounted at {shown}). Unmount it first for a consistent "
+                                 "copy; while it is mounted, the copy can't be compared with the disk afterwards.")
+    if not os.access(info.path, os.R_OK):
+        plan.notes.append("Reading a disk needs administrator rights: you'll be asked for your password.")
+    plan.notes.append("The disk is only read, never written to.")
+    if guess_os(info) == "windows":
+        plan.notes.append("Windows: shut it down completely before copying (Fast Startup leaves the disk "
+                          "half-saved: hold Shift while clicking Shut down), and keep the BitLocker recovery key "
+                          "at hand if the disk is encrypted: the virtual machine will ask for it.")
+
+
 def _compatibility_notes(plan: Plan) -> None:
     info, target = plan.info, plan.job.target
     fmt = target.format
-    if info.format is fmt and not info.differencing and fmt is not F.RAW:
+    if info.format is fmt and not info.differencing and fmt is not F.RAW and not info.device:
         same_kind = (info.subformat == "fixed") == target.fixed
         if same_kind:
             plan.notes.append(f"The source already is a {fmt.label} file; this makes a fresh copy "
@@ -341,7 +386,11 @@ def _compatibility_notes(plan: Plan) -> None:
         plan.notes.append(f"A checkpoint of {info.chain[-1].name}: the {count} files are merged into "
                           "one complete disk (none of them is changed).")
     if info.logical_sector != 512:
-        if info.member:
+        if info.device:
+            plan.warnings.append("This disk uses 4 KB sectors, and virtual disks have 512-byte sectors: a "
+                                 "system on it won't find its partitions in the copy. Disks without a partition "
+                                 "table are fine.")
+        elif info.member:
             plan.errors.append("This disk uses 4 KB sectors, which can't be read inside the archive. "
                                f"Unpack {info.member} from {info.path.name} first (tar -xf) and convert that.")
         elif fmt is F.VHDX:
@@ -408,13 +457,21 @@ def execute(plan: Plan, qemu: QemuImg, progress: ProgressFn | None = None,
         raise ConvertError(plan.errors[0])
     job, info, target = plan.job, plan.info, plan.job.target
     log = log or (lambda _m: None)
-    watched = [info.path] + [p.path for p in info.chain] + info.extent_files
+    watched = [] if info.device else [info.path] + [p.path for p in info.chain] + info.extent_files
     signatures = {p: file_signature(p) for p in watched}
-    reader: ChainReader | None = None
+    reader: ChainReader | devices.DeviceReader | None = None
     server: NbdServer | None = None
     work = work_folder(job.output)
     try:
-        if plan.uses_reader:
+        if info.device:
+            # a physical disk: opened read-only (by a helper with administrator rights if needed)
+            # and served to qemu-img through NBD
+            log(f"Opening {info.path} for reading")
+            fd = devices.open_device(info.path, job.elevate, cancel)
+            reader = devices.DeviceReader(fd, plan.size, info.name)
+            server = NbdServer(reader).start()
+            source = nbd_spec(server.socket_path, server.export)
+        elif plan.uses_reader:
             # VirtConvert&Create reads the source (merging a chain, adding zeros at the end)
             # and qemu-img reads that through NBD
             reader = ChainReader.for_image(info, plan.size)
@@ -434,8 +491,11 @@ def execute(plan: Plan, qemu: QemuImg, progress: ProgressFn | None = None,
         appliance = Appliance(ova.appliance_name(info.stem),
                               info.partitions.firmware if info.partitions else "", guess_os(info))
         work.mkdir()        # write_image removes it
+        if job.verify and not plan.can_verify:
+            log("Not comparing the copy with the disk: it is in use and keeps changing")
         return write_image(
-            qemu, source, plan.size, target, job.output, work, verify=job.verify, overwrite=job.overwrite,
+            qemu, source, plan.size, target, job.output, work, verify=job.verify and plan.can_verify,
+            overwrite=job.overwrite,
             grow=plan.size != info.virtual_size and not plan.uses_reader, appliance=appliance,
             check=lambda: _check_unchanged(signatures), source_error=source_error,
             progress=progress, cancel=cancel, log=log)
@@ -517,7 +577,12 @@ def write_image(qemu: QemuImg, source: str | None, size: int, target: Target, ou
             if cancel():
                 raise OperationCancelled()
             log(f"Packing the appliance {appliance.name} (2 CPUs, SATA disk, NAT network)")
-            ova.write_ova(part, disk, appliance.name, size, appliance.firmware, appliance.os_hint)
+            progress("Packing", 0, 0)
+            try:
+                ova.write_ova(part, disk, appliance.name, size, appliance.firmware, appliance.os_hint,
+                              progress=lambda done, total: progress("Packing", done, total), cancel=cancel)
+            except (OSError, ValueError, tarfile.TarError) as exc:
+                raise ConvertError(f"Packing the appliance failed: {getattr(exc, 'strerror', None) or exc}") from None
             shutil.rmtree(disk.parent)
             packed = ova.list_ova(part)[0]
             copy = member_spec(part, "vmdk", packed.offset, packed.size)
@@ -550,6 +615,7 @@ def write_image(qemu: QemuImg, source: str | None, size: int, target: Target, ou
             progress("Verifying", size, size)
         # the descriptor last, so a VMDK appears only when its data files are in place
         files.sort(key=lambda f: f == part)
+        stale = _old_extents(out, {f.name for f in files}) if overwrite else []
         try:
             _publish(files, out.parent, overwrite)
         except FileExistsError as exc:
@@ -559,12 +625,33 @@ def write_image(qemu: QemuImg, source: str | None, size: int, target: Target, ou
             kept = part if len(files) == 1 else work
             raise ConvertError(f"{Path(str(exc.args[0])).name} appeared while converting, so it was not "
                                f"replaced. The converted copy is in {kept}.") from None
+        for old in stale:       # data files of the VMDK that was replaced, which the new one doesn't use
+            old.unlink(missing_ok=True)
+            log(f"Removed {old.name}, a data file of the replaced {out.name}")
         published = [out.parent / f.name for f in sorted(files, key=lambda f: (f != part, f.name))]
         return Outcome(output=out, size=size, file_size=sum(f.stat().st_size for f in published),
                        seconds=time.monotonic() - started, verified=verified, files=published)
     finally:
         if not keep:
             shutil.rmtree(work, ignore_errors=True)
+
+
+def _old_extents(out: Path, new_names: set[str]) -> list[Path]:
+    """The data files of the VMDK OUT that a new OUT replaces and doesn't use itself: only the
+    ones next to it and named the way OUT's own files are (out-flat.vmdk, out-s001.vmdk…)."""
+    try:
+        if not out.is_file() or out.stat().st_size > (1 << 20):
+            return []
+        old = probe(out)
+    except OSError:
+        return []
+    if old.format is not F.VMDK:
+        return []
+    dot = out.name.rfind(".")
+    stem = out.name[:dot] if dot > 0 else out.name
+    ours = re.compile(re.escape(stem) + r"-(flat|[sf]\d{3})" + re.escape(out.name[dot:] if dot > 0 else ""))
+    return [p for p in old.extent_files
+            if p.parent == out.parent and p.name not in new_names and ours.fullmatch(p.name) and p.exists()]
 
 
 def _check_empty(path: Path, fmt: Format, size: int) -> tuple[bool, str]:

@@ -27,7 +27,7 @@ from PySide6.QtCore import QCoreApplication  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import virtconvert.gui.main_window as mw  # noqa: E402
-from virtconvert.core import ova  # noqa: E402
+from virtconvert.core import devices, ova  # noqa: E402
 from virtconvert.core.qemu import QemuImg  # noqa: E402
 from virtconvert.gui.app import app_icon  # noqa: E402
 from virtconvert.gui.create_dialog import CreateDiskDialog  # noqa: E402
@@ -105,6 +105,21 @@ def make_demo(folder: Path) -> list[Path]:
     ova.write_ova(appliance, vmdk, "Debian", 20 * GIB, os_hint="linux")
     vmdk.unlink()
     return [router, win, child, ubuntu, xp, appliance]
+
+
+def demo_disks() -> list:
+    """Two disks as lsblk would describe them: a second SSD with Windows on it, and a USB stick."""
+    D, P = devices.PhysicalDisk, devices.DiskPart
+    ssd = D(path="/dev/sdb", name="sdb", size=500107862016, model="Samsung SSD 870 EVO 500GB", transport="sata",
+            table="gpt", partitions=[
+                P("sdb1", "/dev/sdb1", 104857600, "vfat", "", EFI),
+                P("sdb2", "/dev/sdb2", 16777216, "", "", MSR),
+                P("sdb3", "/dev/sdb3", 499360923648, "ntfs", "Windows", DATA),
+                P("sdb4", "/dev/sdb4", 625999872, "ntfs", "", RECOVERY)])
+    stick = D(path="/dev/sdc", name="sdc", size=31004295168, model="Ultra", vendor="SanDisk", transport="usb",
+              removable=True, table="dos", partitions=[P("sdc1", "/dev/sdc1", 31003246592, "exfat", "STICK", "0x7")],
+              mountpoints=["/run/media/me/STICK"])
+    return [ssd, stick]
 
 
 def main() -> int:
@@ -196,6 +211,21 @@ def main() -> int:
         dialog.show()
         pump(0.5)
         dialog.grab().save(str(args.out / f"create-{args.theme}.png"))
+        dialog.close()
+
+        # New disk from a physical disk (demo disks: this computer's own are not shown)
+        demo = demo_disks()
+        devices.list_disks = lambda include_loop=False: demo
+        devices.inspect_device = lambda path: devices.info_from_disk(next(d for d in demo if d.path == str(path)))
+        win.settings.setValue("create/source", "physical")
+        dialog = CreateDiskDialog(win, win.qemu, win.settings)
+        dialog.picker.fmt_seg.set_value("vdi")
+        dialog.picker._edited()
+        dialog._format_changed()
+        dialog._replan()
+        dialog.show()
+        pump(0.5)
+        dialog.grab().save(str(args.out / f"physical-{args.theme}.png"))
         dialog.close()
         win.close()
         return 0

@@ -8,13 +8,15 @@
   <description>
     <p>
       VirtConvert&amp;Create converts virtual disks between VirtualBox, Hyper-V,
-      VMware and QEMU/KVM, and creates new ones: empty, or with a formatted partition ready to use.
+      VMware and QEMU/KVM, and creates new ones: empty, with a formatted partition ready to use, or
+      as a copy of a physical disk.
     </p>
     <ul>
       <li>Writes VDI, VMDK, VHD, VHDX, QCOW2, QED, OVA appliances and raw images; also reads Parallels, DMG and ISO</li>
       <li>Hyper-V checkpoints (.avhdx, .avhd) and VirtualBox snapshots are merged with their parents into one disk</li>
       <li>Opens the disks inside OVA appliances, and packs disks into OVA files for Import Appliance</li>
       <li>New disks of any size with a GPT or MBR partition formatted as NTFS, exFAT, FAT32, ext4, Btrfs or XFS</li>
+      <li>Copies of physical disks, USB sticks and memory cards, to run in a virtual machine</li>
       <li>Every copy can be compared with its source, byte for byte, before it is saved</li>
       <li>Shows whether the disk boots with UEFI or BIOS, and what to set in VirtualBox or Hyper-V</li>
       <li>Converts several images in one go; a command-line interface for scripts</li>
@@ -36,6 +38,10 @@
       <image>https://raw.githubusercontent.com/oreo1298/VirtConvert/main/docs/screenshots/back-light.png</image>
     </screenshot>
     <screenshot>
+      <caption>Copying a physical disk into a virtual disk</caption>
+      <image>https://raw.githubusercontent.com/oreo1298/VirtConvert/main/docs/screenshots/physical-dark.png</image>
+    </screenshot>
+    <screenshot>
       <caption>Creating a new disk with an NTFS partition</caption>
       <image>https://raw.githubusercontent.com/oreo1298/VirtConvert/main/docs/screenshots/create-dark.png</image>
     </screenshot>
@@ -50,6 +56,7 @@
         <p>Renamed to VirtConvert&amp;Create.</p>
         <ul>
           <li>Create new disks: empty, partitioned, or formatted with NTFS, exFAT, FAT32, ext4, Btrfs or XFS</li>
+          <li>Copy physical disks into virtual disks</li>
           <li>New formats: QCOW2, QED, OVA and raw are written; Parallels, DMG, ISO, QCOW and OVF are read</li>
           <li>VMDK as one file, preallocated with a -flat file, or in 2 GB files</li>
         </ul>

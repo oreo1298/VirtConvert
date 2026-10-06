@@ -49,6 +49,8 @@ def member_spec(path: str | os.PathLike, driver: str, offset: int, size: int) ->
     data: dict = {"driver": driver}
     if driver == "vpc":
         data["force_size_calc"] = "current_size"
+    # qemu wants whole sectors; tar pads every member to 512 bytes, so the rest is zeros
+    size = -(-size // 512) * 512
     data["file"] = {"driver": "raw", "offset": offset, "size": size,
                     "file": {"driver": "file", "filename": os.path.abspath(path)}}
     return "json:" + json.dumps(data)

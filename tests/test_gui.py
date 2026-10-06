@@ -12,7 +12,7 @@ try:
 except ImportError as exc:  # Qt's libraries are missing (libEGL, ...)
     pytest.skip(f"Qt can't load: {exc}", allow_module_level=True)
 
-from imagewriter import MIB, SECTOR, gpt_sectors, to_sectors, write_vdi, write_vhdx  # noqa: E402
+from imagewriter import MIB, SECTOR, gpt_sectors, mbr_sector, to_sectors, write_vdi, write_vhdx  # noqa: E402
 from PySide6.QtCore import QCoreApplication  # noqa: E402
 
 import virtconvert.gui.main_window as mw  # noqa: E402
@@ -330,3 +330,148 @@ def test_new_disk(window, tmp_path, monkeypatch):
     dialog.out_edit.setText(str(tmp_path / "Shared.vhdx"))
     dialog._replan()
     assert not dialog.create_btn.isEnabled() and "already exists" in dialog.banner.text()
+
+
+@pytest.fixture
+def loop_device(tmp_path):
+    import shutil
+    import subprocess
+    if os.geteuid() != 0 or not shutil.which("losetup"):
+        pytest.skip("needs root and losetup for a loop device")
+    data = bytearray(16 * MIB)
+    data[0:SECTOR] = mbr_sector([(2048, 30000, 0x83, True)])[0]
+    data[3 * MIB:4 * MIB] = os.urandom(MIB)
+    (tmp_path / "disk.img").write_bytes(bytes(data))
+    res = subprocess.run(["losetup", "-f", "--show", str(tmp_path / "disk.img")], capture_output=True, text=True)
+    if res.returncode != 0:
+        pytest.skip(f"no loop device: {res.stderr.strip()}")
+    yield res.stdout.strip(), bytes(data)
+    subprocess.run(["losetup", "-d", res.stdout.strip()])
+
+
+def test_copy_a_physical_disk(window, qemu, tmp_path, monkeypatch, loop_device):
+    from virtconvert.core import devices
+    from virtconvert.gui import create_dialog
+
+    device, data = loop_device
+    real_list = devices.list_disks
+    monkeypatch.setattr(devices, "list_disks", lambda include_loop=False: real_list(include_loop=True))
+
+    def read_back(path, driver):
+        out = tmp_path / "back.raw"
+        qemu.check_run(["convert", "-f", driver, "-O", "raw", str(path), str(out)], "test")
+        return out.read_bytes()
+
+    # New disk → Copy of a physical disk
+    def fill_in(dialog):
+        dialog.source_seg.set_value("physical")
+        dialog._source_changed()
+        index = dialog.chooser.box.findData(device)
+        assert index >= 0, [dialog.chooser.box.itemData(i) for i in range(dialog.chooser.box.count())]
+        dialog.chooser.box.setCurrentIndex(index)
+        assert Path(dialog.out_edit.text()).name.startswith(Path(device).name)     # named after the disk
+        assert not dialog.size_box.isVisibleTo(dialog) and dialog.verify_chk.isVisibleTo(dialog)
+        dialog.out_edit.setText(str(tmp_path / "copy.vdi"))
+        dialog._name_typed("")
+        dialog._replan()
+        assert dialog.create_btn.isEnabled() and dialog.create_btn.text() == "Copy the disk", dialog.plan.errors
+        assert "a copy of" in dialog.banner.text()
+        dialog._create()
+        return dialog.result()
+
+    monkeypatch.setattr(create_dialog.CreateDiskDialog, "exec", fill_in)
+    window.new_disk()
+    wait_for(lambda: not window.runner.busy)
+    assert read_back(tmp_path / "copy.vdi", "vdi") == data
+    assert window.settings.value("create/source") == "physical"
+
+    # Add physical disk… → the list, converted like an image
+    monkeypatch.setattr(create_dialog.DiskPickerDialog, "exec",
+                        lambda dialog: dialog.chooser.box.setCurrentIndex(dialog.chooser.box.findData(device)) or 1)
+    window.add_physical_disk()
+    wait_for(lambda: window.model.items and window.model.items[0].state != mw.INSPECTING)
+    item = window.model.items[0]
+    assert item.info.device and item.from_label.startswith("Physical disk") and item.state == mw.READY
+    assert item.output.parent != Path("/dev")
+    window.table.selectRow(0)
+    pump()
+    window.out_edit.setText(str(tmp_path / "listed.vdi"))      # as typed into Save as
+    window.convert_all()
+    wait_for(lambda: item.state in (mw.DONE, mw.FAILED) and not window.runner.busy)
+    assert item.state == mw.DONE, item.message
+    assert item.output == tmp_path / "listed.vdi"                 # a physical disk goes to VirtualBox
+    assert read_back(item.output, "vdi") == data
+
+
+def test_progress_beyond_2_gb(window):
+    """Byte counts over 2 GB reach the progress bar intact (a C++ int would wrap)."""
+    total = 5 << 30
+
+    def job(progress, cancel):
+        progress("Converting", 3 << 30, total)
+        time.sleep(0.2)
+        return None
+
+    seen = []
+    window.runner.progress.connect(lambda stage, done, t: seen.append((done, t)))
+    window._start("Big", job, lambda _r: None)
+    wait_for(lambda: not window.runner.busy)
+    assert (3 << 30, total) in seen
+
+
+def test_target_edits_change_only_what_was_changed(window, images, qemu):
+    add(window, images / "Win.vhdx", images / "Linux.vdi")
+    vhdx, vdi = window.model.items
+    # one image becomes a dynamic VHD, the other a stream-optimized VMDK
+    window.table.selectRow(0)
+    pump()
+    window.fmt_seg.set_value("vhd")
+    window.picker._edited()
+    window.table.selectRow(1)
+    pump()
+    window.fmt_seg.set_value("vmdk")
+    window.picker._edited()
+    window.vmdk_seg.set_value("stream")
+    window.picker._edited()
+    assert vhdx.target.label == "VHD (dynamic)" and vdi.target.label == "VMDK (stream-optimized)"
+    # both selected, Fixed clicked: the VHD becomes fixed, the VMDK keeps its format and variant
+    window.table.selectAll()
+    pump()
+    assert window.current_item() is vhdx
+    window.alloc_seg.set_value("fixed")
+    window.picker._edited()
+    assert vhdx.target.label == "VHD (fixed)" and vdi.target.label == "VMDK (stream-optimized)"
+    # clicking the chosen format again doesn't touch a finished image
+    window.table.selectRow(0)
+    pump()
+    vhdx.state = mw.DONE
+    output = vhdx.output
+    window.fmt_seg.set_value("vhd")
+    window.picker._edited()
+    assert vhdx.state == mw.DONE and vhdx.output == output
+
+
+def test_names_too_long_block_the_item(window, tmp_path, monkeypatch):
+    import errno
+
+    def refuse(*a, **k):
+        raise OSError(errno.ENAMETOOLONG, "File name too long", str(tmp_path / ("x" * 300)))
+
+    monkeypatch.setattr(mw, "default_output", refuse)
+    write_vdi(tmp_path / "a.vdi", 2 * MIB, {})
+    add(window, tmp_path / "a.vdi")
+    item = window.model.items[0]
+    assert item.state == mw.BLOCKED and item.message.startswith("File name too long"), item.message
+
+
+def test_save_dialog_consent_is_for_its_own_file(window, images, monkeypatch):
+    (images / "taken.vhdx").write_bytes(b"old")
+    add(window, images / "Linux.vdi")
+    window.table.selectRow(0)
+    pump()
+    # the dialog returned "taken" (which doesn't exist); "taken.vhdx" does, and was never asked about
+    monkeypatch.setattr(mw.QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (str(images / "taken"), "")))
+    window.choose_output()
+    item = window.model.items[0]
+    assert item.output == images / "taken.vhdx" and not item.overwrite and item.state == mw.BLOCKED

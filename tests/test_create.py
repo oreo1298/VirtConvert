@@ -1,5 +1,6 @@
 """Creating new disks: empty, partitioned and formatted."""
 
+import errno
 import os
 import shutil
 import struct
@@ -272,6 +273,8 @@ def test_missing_mkfs_names_the_package(qemu, tmp_path, monkeypatch):
     assert "sudo dnf install ntfsprogs" in plan.errors[0]
     monkeypatch.setattr(system, "package_manager", lambda: "apt-get")
     assert "sudo apt install ntfs-3g" in plan_for(qemu, tmp_path, scheme="gpt", filesystem="ntfs").errors[0]
+    monkeypatch.setattr(system, "package_manager", lambda: "pacman")     # Arch split mkntfs off ntfs-3g
+    assert "sudo pacman -S ntfsprogs" in plan_for(qemu, tmp_path, scheme="gpt", filesystem="ntfs").errors[0]
 
 
 def test_cancel_while_formatting(qemu, tmp_path):
@@ -311,3 +314,63 @@ def test_create_command(qemu, tmp_path, capsys):
     with pytest.raises(SystemExit, match="with --to"):
         cli.main(["create", str(tmp_path / "what.txt"), "-s", "1G"])
     assert cli.main(["create", str(tmp_path / "empty.vhdx"), "-s", "1G"]) == 1      # exists
+
+
+# ---------------------------------------------------------------------- review findings
+
+def test_labels_in_the_file_systems_units():
+    fs = C.FS_BY_KEY
+    assert C.clean_label(fs["btrfs"], "Ä" * 200) == "Ä" * 127                 # 255 bytes
+    assert C.clean_label(fs["exfat"], "😀" * 11) == "😀" * 5                    # 11 UTF-16 units
+    assert C.clean_label(fs["ntfs"], "é" * 40) == "é" * 32
+    assert C.cut("a😀b", 2, "utf16") == "a"
+
+
+def test_parse_size_rejects_nonsense():
+    for bad in ("inf", "nan", "1e400", "-inf"):
+        with pytest.raises(ConvertError):
+            C.parse_size(bad)
+
+
+def test_unicode_exfat_label(qemu, tmp_path):
+    if tool("mkfs.exfat") is None:
+        pytest.skip("mkfs.exfat is needed")
+    plan, outcome = new(qemu, tmp_path, "share.vdi", 64 * MIB, scheme="gpt", filesystem="exfat", label="Fotos März")
+    assert outcome.verified and plan.label == "Fotos März"
+
+
+def test_fixed_vhdx_is_checked_quickly(qemu, tmp_path):
+    if tool("mkntfs") is None:
+        pytest.skip("mkntfs is needed")
+    import time
+    started = time.monotonic()
+    _, outcome = new(qemu, tmp_path, "fixed.vhdx", 20 * GIB, parse_target("vhdx", fixed=True),
+                     scheme="gpt", filesystem="ntfs")
+    assert outcome.verified and probe(outcome.output).subformat == "fixed"
+    assert time.monotonic() - started < 15        # qemu-img compare would read all 20 GB
+
+
+def test_minimum_size_messages(qemu, tmp_path):
+    assert "at least 301 MB" in plan_for(qemu, tmp_path, size=200 * MIB, scheme="mbr", filesystem="xfs").errors[0]
+    assert plan_for(qemu, tmp_path, size=301 * MIB, scheme="mbr", filesystem="xfs").ok or tool("mkfs.xfs") is None
+
+
+def test_gpt_names_are_not_cut_inside_a_character():
+    table = P.gpt_table(8 * MIB, [(MIB, 4 * MIB, P.LINUX_DATA, "a" + "😀" * 20)])
+    entry = table[2 * SECTOR][:128]
+    name = entry[56:128].decode("utf-16-le").rstrip("\0")
+    assert name == "a" + "😀" * 17
+
+
+def test_disk_full_is_a_clear_error(qemu, tmp_path, monkeypatch):
+    if tool("mkfs.ext4") is None:
+        pytest.skip("mkfs.ext4 is needed")
+    plan = plan_for(qemu, tmp_path, "full.vdi", scheme="gpt", filesystem="ext4")
+
+    def no_space(*a, **k):
+        raise OSError(errno.ENOSPC, "No space left on device", str(tmp_path / "x"))
+
+    monkeypatch.setattr(C, "copy_allocated", no_space)
+    with pytest.raises(ConvertError, match="Not enough space"):
+        C.create_disk(plan, qemu)
+    assert list(tmp_path.iterdir()) == []

@@ -52,12 +52,12 @@ from ..core.convert import (
     verify_images,
 )
 from ..core.create import create_disk, make_create_plan
-from ..core.errors import ConvertError, OperationCancelled, VerifyError
+from ..core.errors import ConvertError, OperationCancelled, VerifyError, os_error_text
 from ..core.images import expand_sources, inspect_image
 from ..core.qemu import QemuImg
 from ..core.util import human_bytes, mmss
 from . import icons
-from .create_dialog import CreateDiskDialog
+from .create_dialog import CreateDiskDialog, DiskPickerDialog
 from .dialogs import AboutDialog, QemuMissingDialog, ask_yes_no
 from .pickers import TargetPicker, target_from_setting
 from .queue import (
@@ -121,6 +121,7 @@ class MainWindow(QMainWindow):
         self._stop_queue = False
         self._updating_controls = False
         self.output_folder: Path | None = None
+        self._shown_target = Target(F.VDI)
 
         self.setWindowTitle(APP_NAME)
         self.setAcceptDrops(True)
@@ -177,7 +178,11 @@ class MainWindow(QMainWindow):
         self.act_add = a("Add…", "open", lambda: self.add_files(), "Ctrl+O",
                          "Add VHD, VHDX, VDI, VMDK, QCOW2, OVA or other disk images to the list")
         self.act_new = a("New disk…", "plus", self.new_disk, "Ctrl+N",
-                         "Create a new virtual disk: empty, or with a formatted partition")
+                         "Create a new virtual disk: empty, formatted, or a copy of a physical disk")
+        self.act_add_disk = a("Add physical disk…", "hdd", self.add_physical_disk, "Ctrl+Shift+D",
+                              "Put one of this computer's disks in the list, to convert it into a virtual disk")
+        self.act_add_images = QAction("Add images…", self)
+        self.act_add_images.triggered.connect(lambda: self.add_files())
         self.act_remove = a("Remove", "trash", self.remove_selected, "Del",
                             "Remove the selected images from the list (the files stay)")
         self.act_clear = a("Clear done", "eraser", self.clear_finished, "Ctrl+Shift+L",
@@ -214,7 +219,8 @@ class MainWindow(QMainWindow):
     def _build_menus(self) -> None:
         mb = self.menuBar()
         m = mb.addMenu("&File")
-        for act in (self.act_add, self.act_new, None, self.act_folder, self.act_copy_path, None, self.act_quit):
+        for act in (self.act_add, self.act_add_disk, self.act_new, None, self.act_folder, self.act_copy_path,
+                    None, self.act_quit):
             m.addSeparator() if act is None else m.addAction(act)
         m = mb.addMenu("&Images")
         for act in (self.act_convert, self.act_cancel, None, self.act_remove, self.act_clear,
@@ -258,8 +264,15 @@ class MainWindow(QMainWindow):
         bl.addLayout(text)
         tb.addWidget(brand)
         tb.addSeparator()
-        for act in (self.act_add, self.act_new, self.act_remove, self.act_clear):
+        # (Clear done stays in the Images menu and the list's menu: the toolbar has to fit 1020 pixels)
+        for act in (self.act_add, self.act_new, self.act_remove):
             tb.addAction(act)
+        add_btn = tb.widgetForAction(self.act_add)
+        add_menu = QMenu(add_btn)
+        add_menu.addAction(self.act_add_images)
+        add_menu.addAction(self.act_add_disk)
+        add_btn.setMenu(add_menu)
+        add_btn.setPopupMode(QToolButton.MenuButtonPopup)
         tb.addSeparator()
         tb.addAction(self.act_convert)
         tb.addSeparator()
@@ -346,7 +359,8 @@ class MainWindow(QMainWindow):
         card.header.addWidget(self.img_badge)
 
         self.img_empty = QLabel("Add a disk image (VHD, VHDX, VDI, VMDK, QCOW2, OVA…) to convert it, "
-                                "or drop files on the window. New disk makes an empty or formatted one.")
+                                "or drop files on the window. New disk makes an empty or formatted one, "
+                                "or a copy of a physical disk.")
         self.img_empty.setObjectName("Muted")
         self.img_empty.setWordWrap(True)
         card.add(self.img_empty)
@@ -473,7 +487,7 @@ class MainWindow(QMainWindow):
 
         self.queue_stack = QStackedWidget()
         self.drop_zone = DropZone(text="Hyper-V disks become VDI for VirtualBox; VirtualBox disks go to VHDX for "
-                                       "Hyper-V; or pick\nVMDK, QCOW2, OVA and more. Checkpoints and snapshots are "
+                                       "Hyper-V; or pick VMDK, QCOW2, OVA and more. Checkpoints and snapshots are "
                                        "merged with their parents.", secondary="New disk…")
         self.drop_zone.addRequested.connect(lambda: self.add_files())
         self.drop_zone.secondaryRequested.connect(self.new_disk)
@@ -756,6 +770,15 @@ class MainWindow(QMainWindow):
         return target_from_setting(str(self.settings.value(key, default.key)), default)
 
     def _replan(self, item: Item) -> None:
+        try:
+            self._replan_item(item)
+        except OSError as exc:       # a name the file system refuses (too long, …)
+            item.plan = None
+            item.state = BLOCKED
+            item.message = f"{exc.strerror or exc}: {Path(exc.filename).name}" if exc.filename else str(exc)
+            self.model.refresh(item)
+
+    def _replan_item(self, item: Item) -> None:
         if item.info is None or item.state in (WAITING, RUNNING, DONE):
             return
         if item.info.format is None:
@@ -766,8 +789,11 @@ class MainWindow(QMainWindow):
             return
         if not item.output_custom or item.output is None:
             taken = {i.output for i in self.model.items if i is not item and i.output is not None}
-            item.output = default_output(item.info, item.target, self.output_folder,
-                                         unique=True, taken=taken)
+            folder = self.output_folder
+            if folder is None and item.info.device:     # not next to /dev/sdb
+                last = Path(self._last_dir())
+                folder = last if last.is_dir() and not str(last).startswith("/dev") else Path.home()
+            item.output = default_output(item.info, item.target, folder, unique=True, taken=taken)
         elif item.output.suffix.lower() not in item.target.format.extensions:
             item.output = item.output.with_suffix(item.target.format.extension)
         job = Job(source=item.source, target=item.target, output=item.output,
@@ -854,6 +880,8 @@ class MainWindow(QMainWindow):
         self.img_sub.setToolTip("\n".join(tip))
         if not info.ok:
             set_badge(self.img_badge, "PROBLEM", "Bad")
+        elif info.device:
+            set_badge(self.img_badge, "IN USE" if info.mountpoints else "DISK", "Warn" if info.mountpoints else "Info")
         elif info.differencing:
             set_badge(self.img_badge, "CHECKPOINT", "Info")
         else:
@@ -863,7 +891,7 @@ class MainWindow(QMainWindow):
         self.tile_file.set(human_bytes(info.allocated) if fmt else "—",
                            f"{info.file_size:,} bytes, {info.allocated:,} on disk")
         block = f", {human_bytes(info.block_size)} blocks" if info.block_size else ""
-        self.tile_format.set(fmt.label if fmt else "?", f"{info.subformat}{block}")
+        self.tile_format.set("Disk" if info.device else fmt.label if fmt else "?", f"{info.subformat}{block}")
         parts = info.partitions
         self.img_grid.set("parts", parts.label if parts else "—", parts.summary() if parts else "")
         self.img_grid.set("boot", parts.boot_label if parts and parts.firmware else "—")
@@ -883,9 +911,10 @@ class MainWindow(QMainWindow):
             self.img_banner.show()
         else:
             self.img_banner.hide()
+        # (a disk inside an OVA can't be repaired or given a parent: it is unpacked first)
         self.parent_btn.setVisible(info.differencing and (not info.chain or bool(problems))
-                                   and item.editable)
-        self.repair_btn.setVisible(info.dirty and item.editable)
+                                   and item.editable and not info.member)
+        self.repair_btn.setVisible(info.dirty and item.editable and not info.member)
 
     def _show_target(self, item: Item | None) -> None:
         self._updating_controls = True
@@ -894,7 +923,8 @@ class MainWindow(QMainWindow):
                 and item.info.format is not None
             for w in (self.picker, self.out_edit, self.out_btn):
                 w.setEnabled(enabled)
-            self.picker.set_target(item.target if item is not None else Target(F.VDI))
+            self._shown_target = item.target if item is not None else Target(F.VDI)
+            self.picker.set_target(self._shown_target)
             self.out_edit.setText(str(item.output) if item is not None and item.output else "")
             self.out_edit.setCursorPosition(len(self.out_edit.text()))
             self._show_plan(item)
@@ -925,11 +955,25 @@ class MainWindow(QMainWindow):
         self.plan_banner.setVisible(bool(lines))
 
     def _target_edited(self) -> None:
+        """Apply what was changed in the picker (only that: with several images selected, each keeps
+        its other choices) to the selected images; ones it doesn't change stay as they are."""
         if self._updating_controls:
             return
-        target = self.picker.target()
+        new, old = self.picker.target(), self._shown_target
+        if new == old:
+            return              # the format that was already chosen, clicked again
+        changed = {name for name in ("format", "fixed", "stream", "azure", "split")
+                   if getattr(new, name) != getattr(old, name)}
         for item in self.selected_items():
             if not item.editable or item.info is None or item.info.format is None:
+                continue
+            if "format" in changed:
+                target = new
+            else:
+                fields = {name: getattr(new if name in changed else item.target, name)
+                          for name in ("fixed", "stream", "azure", "split")}
+                target = Target(item.target.format, **fields).normalized()
+            if target == item.target:
                 continue
             item.target = target
             if item.state == DONE:
@@ -937,7 +981,8 @@ class MainWindow(QMainWindow):
                 item.outcome = None
             self._replan(item)
             default = F.default_target_for(item.info.format)
-            variant = self.picker.variant_key()
+            parts = ["azure"] if target.azure else ["stream"] if target.stream else ["fixed"] if target.fixed else []
+            variant = "+".join(parts + (["split"] if target.split else []))
             self.settings.setValue("target_hyperv" if default is F.VHDX else "target_vbox",
                                    target.format.key + (f":{variant}" if variant else ""))
         self._show_target(self.current_item())
@@ -968,13 +1013,13 @@ class MainWindow(QMainWindow):
                                               f"{fmt.label} (*{fmt.extension});;All files (*)")
         if not path:
             return
-        out = Path(path)
-        if not out.suffix:
-            out = out.with_suffix(fmt.extension)
+        chosen = Path(path)
+        out = chosen if chosen.suffix else chosen.with_suffix(fmt.extension)
         item.output = out
         item.output_custom = True
-        # the save dialog already asked whether to replace an existing file: for this item only
-        item.overwrite = out.exists()
+        # the save dialog asked whether to replace the file it returned (not one with an added
+        # extension): for this item only
+        item.overwrite = out == chosen and chosen.exists()
         self._replan(item)
         self._show_target(item)
         self._update_actions()
@@ -1023,8 +1068,8 @@ class MainWindow(QMainWindow):
         self.act_verify.setEnabled(not busy and self.qemu is not None)
         cur = self.current_item()
         info = cur.info if cur is not None else None
-        self.act_parent.setEnabled(bool(info and info.differencing and cur.editable))
-        self.act_repair.setEnabled(bool(info and info.dirty and cur.editable) and not busy)
+        self.act_parent.setEnabled(bool(info and info.differencing and cur.editable and not info.member))
+        self.act_repair.setEnabled(bool(info and info.dirty and cur.editable and not info.member) and not busy)
         self.act_cancel.setEnabled(busy)
         self.act_add.setEnabled(True)
 
@@ -1148,7 +1193,7 @@ class MainWindow(QMainWindow):
             self.table.selectRow(index.row())
         menu = QMenu(self)
         for act in (self.act_convert, None, self.act_folder, self.act_copy_path, None,
-                    self.act_parent, self.act_repair, None, self.act_remove):
+                    self.act_parent, self.act_repair, None, self.act_remove, self.act_clear):
             if act is None:
                 menu.addSeparator()
             elif act.isEnabled():
@@ -1201,7 +1246,8 @@ class MainWindow(QMainWindow):
         job = Job(source=item.source, target=item.target, output=item.output,
                   verify=self.verify_chk.isChecked(),
                   overwrite=self.overwrite_chk.isChecked() or item.overwrite,
-                  parents=dict(item.parents), force_parent=item.force_parent, member=item.member)
+                  parents=dict(item.parents), force_parent=item.force_parent, member=item.member,
+                  elevate="pkexec")
         log = self.logLine.emit
 
         def work(progress, cancel):
@@ -1241,13 +1287,14 @@ class MainWindow(QMainWindow):
             self._stop_queue = True
         else:
             item.state = FAILED
-            item.message = str(exc) if isinstance(exc, ConvertError) else repr(exc)
+            item.message = (str(exc) if isinstance(exc, ConvertError) else
+                            os_error_text(exc) if isinstance(exc, OSError) else repr(exc))
             level = "error"
             self.log(f"{item.name}: {item.message}", level)
             if isinstance(exc, VerifyError):
                 QMessageBox.critical(self, "The copy is different", f"{item.name}: {exc}\n\nThe "
                                      "converted file was deleted. Please report this with the log.")
-            elif not isinstance(exc, ConvertError):
+            elif not isinstance(exc, (ConvertError, OSError)):
                 detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
                 box = QMessageBox(QMessageBox.Critical, "Unexpected error", str(exc) or repr(exc),
                                   parent=self)
@@ -1315,9 +1362,10 @@ class MainWindow(QMainWindow):
             self.log("Cancelled.", "warning")
             self.toast.show_message("Cancelled", "warning")
             return
-        if isinstance(exc, ConvertError):
-            self.log(str(exc), "error")
-            QMessageBox.critical(self, APP_NAME, str(exc))
+        if isinstance(exc, (ConvertError, OSError)):
+            text = os_error_text(exc) if isinstance(exc, OSError) else str(exc)
+            self.log(text, "error")
+            QMessageBox.critical(self, APP_NAME, text)
             return
         detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
         self.log(f"Unexpected error: {exc!r}", "error")
@@ -1341,9 +1389,18 @@ class MainWindow(QMainWindow):
             self.toast.show_message(f"Wait until {self.runner.name} has finished", "warning")
             return
         dialog = CreateDiskDialog(self, self.qemu, self.settings)
-        if not dialog.exec() or dialog.disk is None:
+        try:
+            if not dialog.exec():
+                return
+            disk, job = dialog.disk, dialog.job
+        finally:
+            dialog.deleteLater()
+        if job is not None:
+            self._copy_disk(job)
             return
-        disk, qemu, log = dialog.disk, self.qemu, self.logLine.emit
+        if disk is None:
+            return
+        qemu, log = self.qemu, self.logLine.emit
         plan = make_create_plan(disk, qemu)
 
         def work(progress, cancel):
@@ -1354,6 +1411,29 @@ class MainWindow(QMainWindow):
 
         self.log(f"Creating {disk.output}: {plan.summary}")
         self._start(f"Creating {disk.output.name}", work, self._disk_created)
+
+    def _copy_disk(self, job: Job) -> None:
+        """A virtual disk with the contents of a physical one (chosen in the New disk dialog)."""
+        qemu, log = self.qemu, self.logLine.emit
+
+        def work(progress, cancel):
+            plan = make_plan(job, qemu)        # look at the disk again: it may have been unplugged
+            if not plan.ok:
+                raise ConvertError(plan.errors[0])
+            return execute(plan, qemu, progress, cancel, log=lambda m: log(m, "detail"))
+
+        self.log(f"Copying {job.source} into {job.output} ({job.target.label})")
+        self._start(f"Copying {job.source.name}", work, self._disk_created)
+
+    def add_physical_disk(self) -> None:
+        """Pick one of the computer's disks and put it in the list, to convert it like an image."""
+        dialog = DiskPickerDialog(self)
+        try:
+            path = dialog.exec() and dialog.chooser.path()
+        finally:
+            dialog.deleteLater()
+        if path:
+            self.add_files([path])
 
     def _disk_created(self, outcome) -> None:
         check = ", checked" if outcome.verified else ""

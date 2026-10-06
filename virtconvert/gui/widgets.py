@@ -361,13 +361,15 @@ class DropZone(QFrame):
         text = QLabel(text)
         text.setObjectName("Muted")
         text.setAlignment(Qt.AlignCenter)
+        text.setWordWrap(True)
+        self.text = text
         self.button = QPushButton(button)
         self.button.setProperty("variant", "primary")
         self.button.setCursor(Qt.PointingHandCursor)
         self.button.clicked.connect(self.addRequested)
         lay.addWidget(self.icon)
         lay.addWidget(title)
-        lay.addWidget(text, 0, Qt.AlignHCenter)
+        lay.addWidget(text)
         lay.addSpacing(6)
         buttons = QHBoxLayout()
         buttons.setSpacing(10)
@@ -387,6 +389,13 @@ class DropZone(QFrame):
 
     def _retheme(self, palette) -> None:
         self.icon.setPixmap(icons.pixmap("drop", palette.text_faint, 44))
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        # a wrapped label doesn't ask its layout for the height it needs at this width
+        margins = self.layout().contentsMargins()
+        width = max(100, self.width() - margins.left() - margins.right())
+        self.text.setMinimumHeight(self.text.heightForWidth(width))
+        super().resizeEvent(event)
 
     def set_active(self, active: bool) -> None:
         self.setProperty("active", active)

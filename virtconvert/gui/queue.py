@@ -51,6 +51,8 @@ class Item:
 
     @property
     def name(self) -> str:
+        if self.info is not None and self.info.device:
+            return self.info.name           # "Samsung SSD 870 EVO (sda)"
         return f"{self.source.name} › {self.member}" if self.member else self.source.name
 
     @property
@@ -67,6 +69,8 @@ class Item:
             return f"{self.info.format.label} checkpoint"
         if self.info.member:
             return f"{self.info.format.label} in OVA"
+        if self.info.device:
+            return self.info.subformat[:1].upper() + self.info.subformat[1:]     # "Physical disk, USB"
         return self.info.label.replace(" · ", " ")
 
     @property

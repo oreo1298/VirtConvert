@@ -358,7 +358,8 @@ def test_parse_target():
     assert parse_target("qed", fixed=True).fixed is False
     assert parse_target("proxmox").format is F.QCOW2
     assert parse_target("vpc").format is F.VHD
-    for read_only in ("iso", "dmg", "parallels", "qcow", "ovf"):
+    assert parse_target("qcow").format is F.QCOW2            # what -t qcow always meant
+    for read_only in ("iso", "dmg", "parallels", "ovf"):
         with pytest.raises(ConvertError, match="read but not written"):
             parse_target(read_only)
     with pytest.raises(ConvertError, match="Unknown"):

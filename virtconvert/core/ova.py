@@ -13,12 +13,14 @@ import with File → Import Appliance.
 from __future__ import annotations
 
 import hashlib
+import posixpath
 import tarfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
-from .errors import ImageFormatError
+from .errors import ImageFormatError, OperationCancelled
 
 OVF_NS = "http://schemas.dmtf.org/ovf/envelope/1"
 DISK_EXTENSIONS = (".vmdk", ".vhd", ".vhdx", ".vdi", ".img", ".raw", ".qcow2", ".iso")
@@ -33,6 +35,8 @@ class ApplianceDisk:
     compression: str = ""        # "gzip" means the disk is stored compressed
     offset: int | None = None    # OVA: where its data starts in the archive
     size: int | None = None      # OVA: its length in the archive
+    sparse: bool = False         # OVA: stored as a sparse tar member (its bytes aren't in one piece)
+    cut_off: bool = False        # OVA: the archive ends before the member does
 
 
 def _attr(el: ET.Element, name: str) -> str | None:
@@ -89,24 +93,36 @@ def is_tar(head: bytes) -> bool:
     return len(head) > 262 and head[257:262] == b"ustar"
 
 
+def _norm(name: str) -> str:
+    """A member name as the archive's own path: ./a.vmdk and a.vmdk are the same."""
+    return posixpath.normpath(name.replace("\\", "/").lstrip("/"))
+
+
 def list_ova(path: Path) -> list[ApplianceDisk]:
     """The disks in an OVA, with their place in the archive."""
     try:
+        archive_size = path.stat().st_size
         with tarfile.open(path, "r:") as tar:
-            members = {m.name: m for m in tar.getmembers() if m.isfile()}
-            descriptor = next((m for n, m in members.items() if n.lower().endswith(".ovf")), None)
-            disks = parse_ovf(tar.extractfile(descriptor).read()) if descriptor is not None else []
+            members = {_norm(m.name): m for m in tar.getmembers() if m.isfile()}
+            descriptor = next((n for n in members if n.lower().endswith(".ovf")), None)
+            disks = parse_ovf(tar.extractfile(members[descriptor]).read()) if descriptor is not None else []
     except (tarfile.TarError, OSError) as exc:
         raise ImageFormatError(f"{path.name} is not a readable OVA archive ({exc})") from None
     if descriptor is None or not disks:
         # no usable descriptor: take the disk files themselves
         disks = [ApplianceDisk(name=n) for n in members if n.lower().endswith(DISK_EXTENSIONS)]
+    else:
+        # hrefs are relative to the descriptor
+        for disk in disks:
+            disk.name = _norm(posixpath.join(posixpath.dirname(descriptor), disk.name.replace("\\", "/")))
     found = []
     for disk in disks:
         member = members.get(disk.name)
         if member is None:
             raise ImageFormatError(f"{path.name} lists {disk.name}, but the archive doesn't contain it")
         disk.offset, disk.size = member.offset_data, member.size
+        disk.sparse = member.sparse is not None
+        disk.cut_off = member.offset_data + member.size > archive_size
         found.append(disk)
     return found
 
@@ -163,7 +179,7 @@ def _ovf(name: str, disk_file: str, disk_size: int, capacity: int, firmware: str
         <vssd:ElementName>Virtual Hardware Family</vssd:ElementName>
         <vssd:InstanceID>0</vssd:InstanceID>
         <vssd:VirtualSystemIdentifier>{esc(name)}</vssd:VirtualSystemIdentifier>
-        <vssd:VirtualSystemType>virtualbox-2.2</vssd:VirtualSystemType>
+        <vssd:VirtualSystemType>vmx-07 virtualbox-2.2</vssd:VirtualSystemType>
       </System>
       <Item>
         <rasd:Caption>2 virtual CPU</rasd:Caption>
@@ -222,27 +238,54 @@ def _xml_escape(text: str) -> str:
             .replace('"', "&quot;"))
 
 
-def _sha256(path: Path) -> str:
+class _Watched:
+    """A file read in pieces that counts what was read and stops when cancelled."""
+
+    def __init__(self, f, step: Callable[[int], None], cancel: Callable[[], bool]):
+        self.f, self.step, self.cancel = f, step, cancel
+
+    def read(self, n: int = -1) -> bytes:
+        if self.cancel():
+            raise OperationCancelled()
+        data = self.f.read(n if n is not None and n >= 0 else 1 << 20)
+        self.step(len(data))
+        return data
+
+
+def _sha256(f: _Watched) -> str:
     h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
+    for chunk in iter(lambda: f.read(1 << 20), b""):
+        h.update(chunk)
     return h.hexdigest()
 
 
-def write_ova(out: Path, vmdk: Path, name: str, capacity: int, firmware: str = "",
-              os_hint: str = "") -> None:
+def write_ova(out: Path, vmdk: Path, name: str, capacity: int, firmware: str = "", os_hint: str = "",
+              progress: Callable[[int, int], None] | None = None,
+              cancel: Callable[[], bool] | None = None) -> None:
     """Pack VMDK (stream-optimized) into the appliance OUT with a descriptor and manifest.
 
     FIRMWARE "uefi" asks VMware for EFI; OS_HINT ("windows", "linux") picks the guest type.
+    PROGRESS(done, total) follows the two passes over the disk (checksum, packing).
     """
+    cancel = cancel or (lambda: False)
+    total = 2 * vmdk.stat().st_size
+    done = 0
+
+    def step(n: int) -> None:
+        nonlocal done
+        done += n
+        if progress is not None:
+            progress(done, total)
+
     disk_name = vmdk.name
     ovf_name = f"{name}.ovf"
     descriptor = _ovf(name, disk_name, vmdk.stat().st_size, capacity, firmware, os_hint)
     ovf_path = vmdk.with_name(ovf_name)
     ovf_path.write_bytes(descriptor)
+    with open(vmdk, "rb") as f:
+        disk_sum = _sha256(_Watched(f, step, cancel))
     manifest = (f"SHA256({ovf_name})= {hashlib.sha256(descriptor).hexdigest()}\n"
-                f"SHA256({disk_name})= {_sha256(vmdk)}\n").encode()
+                f"SHA256({disk_name})= {disk_sum}\n").encode()
     mf_path = vmdk.with_name(f"{name}.mf")
     mf_path.write_bytes(manifest)
     try:
@@ -257,13 +300,15 @@ def write_ova(out: Path, vmdk: Path, name: str, capacity: int, firmware: str = "
                 info.uname = info.gname = "someone"
                 info.mode = 0o644
                 with open(path, "rb") as f:
-                    tar.addfile(info, f)
+                    tar.addfile(info, _Watched(f, step, cancel) if path == vmdk else f)
     finally:
         ovf_path.unlink(missing_ok=True)
         mf_path.unlink(missing_ok=True)
 
 
 def appliance_name(stem: str) -> str:
-    """A name for the machine and the files in the archive (tar names are short and plain)."""
-    cleaned = "".join(c if c.isalnum() or c in "-_." else "_" for c in stem).strip("._") or "appliance"
-    return cleaned[:60]
+    """A name for the machine and the files in the archive: plain characters, and short enough
+    (in bytes) for a tar name with "-disk1.vmdk" added."""
+    cleaned = "".join(c if c.isalnum() or c in "-_." else "_" for c in stem).strip("._")
+    cleaned = cleaned.encode("utf-8")[:80].decode("utf-8", "ignore").strip("._")
+    return cleaned or "appliance"

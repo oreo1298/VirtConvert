@@ -186,7 +186,7 @@ def gpt_table(disk_size: int, partitions: list[tuple[int, int, str, str]]) -> di
     for i, (offset, length, type_guid, name) in enumerate(partitions):
         struct.pack_into("<16s16sQQQ", entries, i * 128, uuid.UUID(type_guid).bytes_le, uuid.uuid4().bytes_le,
                          offset // SECTOR, (offset + length) // SECTOR - 1, 0)
-        label = name.encode("utf-16-le")[:72]
+        label = _utf16_cut(name, 36).encode("utf-16-le")
         entries[i * 128 + 56:i * 128 + 56 + len(label)] = label
     entries_crc = zlib.crc32(entries)
     disk_guid = uuid.uuid4().bytes_le
@@ -207,6 +207,18 @@ def gpt_table(disk_size: int, partitions: list[tuple[int, int, str, str]]) -> di
         (lbas - 1 - entries_sectors) * SECTOR: bytes(entries),
         (lbas - 1) * SECTOR: header(lbas - 1, 1, lbas - 1 - entries_sectors),
     }
+
+
+def _utf16_cut(text: str, units: int) -> str:
+    """TEXT in at most UNITS UTF-16 code units, without splitting a surrogate pair."""
+    kept, used = [], 0
+    for c in text:
+        size = 2 if ord(c) > 0xFFFF else 1
+        if used + size > units:
+            break
+        kept.append(c)
+        used += size
+    return "".join(kept)
 
 
 def _chs(lba: int) -> bytes:

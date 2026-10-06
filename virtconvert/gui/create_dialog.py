@@ -1,4 +1,4 @@
-"""The New disk dialog: format, size, and what goes on the disk."""
+"""The New disk dialog: an empty or formatted disk, or a copy of a physical disk."""
 
 from __future__ import annotations
 
@@ -6,8 +6,9 @@ import html
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -23,10 +24,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..core import devices
 from ..core import formats as F
+from ..core.convert import Job, Plan, make_plan
 from ..core.create import FILESYSTEMS, CreatePlan, NewDisk, available_filesystems, make_create_plan
+from ..core.errors import ConvertError
+from ..core.probe import ImageInfo
 from ..core.qemu import QemuImg
-from ..core.util import GIB, MIB, TIB
+from ..core.util import GIB, MIB, TIB, human_bytes
 from . import icons
 from .pickers import TargetPicker, target_from_setting
 from .theme import theme
@@ -38,18 +43,96 @@ CONTENTS = (
     ("partitioned", "Partitioned", "A partition table with one partition, left unformatted"),
     ("formatted", "Formatted", "One partition with a file system, ready to use as an extra disk"),
 )
+SOURCES = (
+    ("new", "New disk", "An empty disk, or one with a formatted partition"),
+    ("physical", "Copy of a physical disk", "A virtual disk with everything on one of this computer's disks: "
+                                            "a hard disk, an SSD, a USB stick or a memory card"),
+)
+
+
+class DiskChooser(QWidget):
+    """The computer's physical disks in a list, with a refresh button and a description."""
+
+    changed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.box = QComboBox()
+        self.box.currentIndexChanged.connect(lambda _i: self._selected())
+        self.refresh_btn = QToolButton()
+        self.refresh_btn.setObjectName("Flat")
+        self.refresh_btn.setToolTip("Look for disks again (after plugging one in)")
+        self.refresh_btn.setIcon(icons.icon("refresh", theme.palette.text_muted))
+        self.refresh_btn.clicked.connect(self.refresh)
+        row.addWidget(self.box, 1)
+        row.addWidget(self.refresh_btn)
+        lay.addLayout(row)
+        self.desc = QLabel()
+        self.desc.setObjectName("Muted")
+        self.desc.setWordWrap(True)
+        lay.addWidget(self.desc)
+        self.disks: list[devices.PhysicalDisk] = []
+        self.error = ""
+
+    def refresh(self) -> None:
+        current = self.path()
+        try:
+            self.disks = devices.list_disks()
+            self.error = ""
+        except ConvertError as exc:
+            self.disks, self.error = [], str(exc)
+        self.box.blockSignals(True)
+        self.box.clear()
+        for d in self.disks:
+            self.box.addItem(f"{d.title}  ·  {human_bytes(d.size)}", d.path)
+            self.box.setItemData(self.box.count() - 1, f"{d.path}\n{d.summary}", Qt.ToolTipRole)
+        if not self.disks:
+            self.box.addItem(self.error or "No disks found", None)
+        index = self.box.findData(current) if current else -1
+        self.box.setCurrentIndex(max(0, index))
+        self.box.blockSignals(False)
+        self._selected()
+
+    def disk(self) -> devices.PhysicalDisk | None:
+        path = self.box.currentData()
+        return next((d for d in self.disks if d.path == path), None)
+
+    def path(self) -> str | None:
+        disk = self.disk()
+        return disk.path if disk else None
+
+    def _selected(self) -> None:
+        disk = self.disk()
+        if disk is None:
+            self.desc.setText("")
+        else:
+            parts = []
+            for p in disk.partitions:
+                what = " ".join(x for x in (p.fstype, f"“{p.label}”" if p.label else "") if x)
+                parts.append(f"{p.name} {human_bytes(p.size)}" + (f" {what}" if what else ""))
+            self.desc.setText(f"{disk.path} · {disk.summary}" + (f"\n{', '.join(parts)}" if parts else ""))
+        self.changed.emit()
 
 
 class CreateDiskDialog(QDialog):
-    """Asks for a new disk; .disk is the NewDisk to create after exec() returns true."""
+    """Asks for a new disk. After exec() returns true, .disk is the NewDisk to create, or .job
+    the copy of a physical disk to make (run with convert.execute)."""
 
     def __init__(self, parent: QWidget, qemu: QemuImg | None, settings: QSettings):
         super().__init__(parent)
         self.qemu = qemu
         self.settings = settings
         self.disk: NewDisk | None = None
-        self.plan: CreatePlan | None = None
-        self._overwrite_ok: Path | None = None     # a file the save dialog said may be replaced
+        self.job: Job | None = None
+        self.plan: CreatePlan | Plan | None = None
+        self._overwrite_ok: Path | None = None     # the file the save dialog said may be replaced
+        self._auto_name = True                     # the name follows the source until it's edited
+        self._device_info: dict[str, ImageInfo] = {}
         self.setWindowTitle("New disk")
         self.setMinimumWidth(600)
         self._timer = QTimer(self)
@@ -64,8 +147,9 @@ class CreateDiskDialog(QDialog):
         title.setObjectName("Title")
         title.setFont(scaled_font(title, 1.3, bold=True))
         lay.addWidget(title)
-        intro = QLabel("An empty disk to install an operating system on, or one with a formatted partition "
-                       "to attach to a virtual machine as an extra drive.")
+        intro = QLabel("An empty disk to install an operating system on, one with a formatted partition to "
+                       "attach to a virtual machine as an extra drive, or a copy of one of this computer's "
+                       "disks to run in a virtual machine.")
         intro.setObjectName("Muted")
         intro.setWordWrap(True)
         lay.addWidget(intro)
@@ -82,6 +166,22 @@ class CreateDiskDialog(QDialog):
             lbl.setObjectName("Muted")
             return lbl
 
+        self.source_seg = SegmentedControl()
+        for key, text, tip in SOURCES:
+            self.source_seg.add(text, key, tip)
+        self.source_seg.set_value("new")
+        self.source_seg.changed.connect(lambda _v: self._source_changed())
+        grid.addWidget(label("Start from"), row, 0)
+        grid.addWidget(self.source_seg, row, 1)
+        row += 1
+
+        self.disk_label = label("Disk")
+        self.chooser = DiskChooser()
+        self.chooser.changed.connect(self._disk_changed)
+        grid.addWidget(self.disk_label, row, 0, Qt.AlignTop)
+        grid.addWidget(self.chooser, row, 1)
+        row += 1
+
         self.picker = TargetPicker(label_width=0, stream=False)
         self.picker.variant_label.hide()        # the row sits under the format grid
         self.picker.changed.connect(self._format_changed)
@@ -89,6 +189,7 @@ class CreateDiskDialog(QDialog):
         grid.addWidget(self.picker, row, 1)
         row += 1
 
+        self.size_label = label("Size")
         size_row = QHBoxLayout()
         size_row.setSpacing(8)
         self.size_spin = QSpinBox()
@@ -104,16 +205,20 @@ class CreateDiskDialog(QDialog):
         size_row.addWidget(self.size_spin)
         size_row.addWidget(self.unit_box)
         size_row.addStretch(1)
-        grid.addWidget(label("Size"), row, 0)
-        grid.addLayout(size_row, row, 1)
+        self.size_box = QWidget()
+        self.size_box.setLayout(size_row)
+        size_row.setContentsMargins(0, 0, 0, 0)
+        grid.addWidget(self.size_label, row, 0)
+        grid.addWidget(self.size_box, row, 1)
         row += 1
 
+        self.contents_label = label("Contents")
         self.contents_seg = SegmentedControl()
         for key, text, tip in CONTENTS:
             self.contents_seg.add(text, key, tip)
         self.contents_seg.set_value("empty")
         self.contents_seg.changed.connect(lambda _v: self._contents_changed())
-        grid.addWidget(label("Contents"), row, 0)
+        grid.addWidget(self.contents_label, row, 0)
         grid.addWidget(self.contents_seg, row, 1)
         row += 1
 
@@ -130,6 +235,7 @@ class CreateDiskDialog(QDialog):
         self.fs_label = label("File system")
         fs_row = QHBoxLayout()
         fs_row.setSpacing(8)
+        fs_row.setContentsMargins(0, 0, 0, 0)
         self.fs_box = QComboBox()
         tools = available_filesystems()
         for fs in FILESYSTEMS:
@@ -142,8 +248,10 @@ class CreateDiskDialog(QDialog):
         self.label_edit.textChanged.connect(lambda _t: self._changed())
         fs_row.addWidget(self.fs_box, 1)
         fs_row.addWidget(self.label_edit, 1)
+        self.fs_row = QWidget()
+        self.fs_row.setLayout(fs_row)
         grid.addWidget(self.fs_label, row, 0)
-        grid.addLayout(fs_row, row, 1)
+        grid.addWidget(self.fs_row, row, 1)
         row += 1
         self.fs_desc = QLabel()
         self.fs_desc.setObjectName("Muted")
@@ -154,7 +262,7 @@ class CreateDiskDialog(QDialog):
         out_row = QHBoxLayout()
         out_row.setSpacing(8)
         self.out_edit = QLineEdit()
-        self.out_edit.textEdited.connect(lambda _t: self._changed())
+        self.out_edit.textEdited.connect(self._name_typed)
         self.out_btn = QToolButton()
         self.out_btn.setObjectName("Flat")
         self.out_btn.setToolTip("Choose where to save the new disk")
@@ -164,6 +272,11 @@ class CreateDiskDialog(QDialog):
         out_row.addWidget(self.out_btn)
         grid.addWidget(label("Save as"), row, 0)
         grid.addLayout(out_row, row, 1)
+        row += 1
+        self.verify_chk = QCheckBox("Compare the copy with the disk afterwards (reads the disk twice)")
+        self.verify_chk.setChecked(True)
+        self.verify_chk.toggled.connect(lambda _c: self._changed())
+        grid.addWidget(self.verify_chk, row, 1)
         lay.addLayout(grid)
 
         self.banner = QLabel()
@@ -183,9 +296,13 @@ class CreateDiskDialog(QDialog):
         lay.addWidget(buttons)
 
         self._restore()
-        self._contents_changed()
+        self._source_changed()
 
     # ------------------------------------------------------------------ state
+
+    @property
+    def physical(self) -> bool:
+        return self.source_seg.value() == "physical"
 
     def _restore(self) -> None:
         s = self.settings
@@ -199,25 +316,31 @@ class CreateDiskDialog(QDialog):
         self.table_seg.set_value(str(s.value("create/table", "gpt")))
         index = self.fs_box.findData(str(s.value("create/fs", "ntfs")))
         self.fs_box.setCurrentIndex(max(0, index))
+        self.source_seg.set_value(str(s.value("create/source", "new")))
         last = str(s.value("create/last_output", "") or "")
-        folder = Path(last).parent if last else Path(str(s.value("last_dir", str(Path.home()))))
-        if not folder.is_dir():
-            folder = Path.home()
-        self.out_edit.setText(str(self._free_name(folder / f"New disk{self.picker.target().format.extension}")))
+        self.folder = Path(last).parent if last else Path(str(s.value("last_dir", str(Path.home()))))
+        if not self.folder.is_dir():
+            self.folder = Path.home()
+        self._name_for_source()
 
     def _save(self) -> None:
         s = self.settings
         variant = self.picker.variant_key()
         s.setValue("create/target", self.picker.target().format.key + (f":{variant}" if variant else ""))
-        s.setValue("create/size", self.size_spin.value())
-        s.setValue("create/unit", self.unit_box.currentIndex())
-        s.setValue("create/contents", self.contents_seg.value())
-        s.setValue("create/table", self.table_seg.value())
-        s.setValue("create/fs", self.fs_box.currentData())
+        s.setValue("create/source", self.source_seg.value())
+        if not self.physical:
+            s.setValue("create/size", self.size_spin.value())
+            s.setValue("create/unit", self.unit_box.currentIndex())
+            s.setValue("create/contents", self.contents_seg.value())
+            s.setValue("create/table", self.table_seg.value())
+            s.setValue("create/fs", self.fs_box.currentData())
 
     @staticmethod
     def _free_name(path: Path) -> Path:
-        if not path.exists():
+        try:
+            if not path.exists():
+                return path
+        except OSError:
             return path
         stem, ext = path.name[:-len(path.suffix)] if path.suffix else path.name, path.suffix
         for n in range(2, 1000):
@@ -240,7 +363,43 @@ class CreateDiskDialog(QDialog):
                        filesystem=self.fs_box.currentData() if contents == "formatted" else "",
                        label=self.label_edit.text(), overwrite=out == self._overwrite_ok)
 
+    def copy_job(self) -> Job | None:
+        path = self.chooser.path()
+        if path is None:
+            return None
+        out = self.output()
+        return Job(source=Path(path), target=self.picker.target(), output=out, verify=self.verify_chk.isChecked(),
+                   overwrite=out == self._overwrite_ok, elevate="pkexec")
+
     # ------------------------------------------------------------------ reacting
+
+    def _name_for_source(self) -> None:
+        """A name from the source (the disk's model, or "New disk") until one is typed."""
+        if not self._auto_name:
+            return
+        disk = self.chooser.disk() if self.physical else None
+        stem = disk.stem if disk is not None else "New disk"
+        self.out_edit.setText(str(self._free_name(self.folder / f"{stem}{self.picker.target().format.extension}")))
+
+    def _name_typed(self, _text: str) -> None:
+        self._auto_name = False
+        self._changed()
+
+    def _source_changed(self) -> None:
+        physical = self.physical
+        if physical and not self.chooser.disks:
+            self.chooser.refresh()
+        for w in (self.disk_label, self.chooser, self.verify_chk):
+            w.setVisible(physical)
+        for w in (self.size_label, self.size_box, self.contents_label, self.contents_seg):
+            w.setVisible(not physical)
+        self.create_btn.setText("Copy the disk" if physical else "Create")
+        self._name_for_source()
+        self._contents_changed()
+
+    def _disk_changed(self) -> None:
+        self._name_for_source()
+        self._changed()
 
     def _format_changed(self) -> None:
         fmt = self.picker.target().format
@@ -253,17 +412,17 @@ class CreateDiskDialog(QDialog):
         self._changed()
 
     def _contents_changed(self) -> None:
-        contents = self.contents_seg.value()
+        contents = None if self.physical else self.contents_seg.value()
         for w in (self.table_label, self.table_seg):
-            w.setVisible(contents != "empty")
-        for w in (self.fs_label, self.fs_box, self.label_edit, self.fs_desc):
+            w.setVisible(contents in ("partitioned", "formatted"))
+        for w in (self.fs_label, self.fs_row, self.fs_desc):
             w.setVisible(contents == "formatted")
         self._changed()
         if self.isVisible():
             QTimer.singleShot(0, self._fit)
 
     def _fit(self) -> None:
-        """As tall as the rows need (they come and go with Contents), at least 600 wide."""
+        """As tall as the rows need (they come and go with the choices), at least 600 wide."""
         hint = self.sizeHint()
         self.resize(max(600, hint.width()), hint.height())
 
@@ -277,15 +436,35 @@ class CreateDiskDialog(QDialog):
         self.fs_desc.setText(fs.title if fs else "")
         self._timer.start()
 
+    def _plan_copy(self) -> tuple[Plan | None, str, list[str]]:
+        job = self.copy_job()
+        if job is None:
+            return None, "No disk chosen", [self.chooser.error or "No disks were found."]
+        info = self._device_info.get(str(job.source))
+        if info is None:
+            info = self._device_info[str(job.source)] = devices.inspect_device(job.source)
+        plan = make_plan(job, self.qemu, info)
+        summary = f"{human_bytes(plan.size)} {plan.target.label}, a copy of {info.name}"
+        return plan, summary, plan.errors
+
     def _replan(self) -> None:
-        self.plan = make_create_plan(self.new_disk(), self.qemu)
+        try:
+            if self.physical:
+                self.plan, summary, errors = self._plan_copy()
+            else:
+                self.plan = make_create_plan(self.new_disk(), self.qemu)
+                summary, errors = self.plan.summary, self.plan.errors
+        except (OSError, ConvertError) as exc:      # a name the file system refuses, lsblk failing…
+            self.plan, summary = None, "Can't continue"
+            errors = [getattr(exc, "strerror", None) and f"{exc.strerror}: {exc.filename}" or str(exc)]
         pal = theme.palette
-        lines = [f"<b>{html.escape(self.plan.summary)}</b>"]
-        lines += [f'<span style="color:{pal.danger}">✕</span> {html.escape(e)}' for e in self.plan.errors]
-        lines += [f'<span style="color:{pal.warning}">!</span> {html.escape(w)}' for w in self.plan.warnings]
-        lines += [f'<span style="color:{pal.accent}">•</span> {html.escape(n)}' for n in self.plan.notes]
+        lines = [f"<b>{html.escape(summary)}</b>"]
+        lines += [f'<span style="color:{pal.danger}">✕</span> {html.escape(e)}' for e in errors]
+        if self.plan is not None:
+            lines += [f'<span style="color:{pal.warning}">!</span> {html.escape(w)}' for w in self.plan.warnings]
+            lines += [f'<span style="color:{pal.accent}">•</span> {html.escape(n)}' for n in self.plan.notes]
         self.banner.setText("<br>".join(lines))
-        self.create_btn.setEnabled(self.plan.ok)
+        self.create_btn.setEnabled(self.plan is not None and self.plan.ok)
 
     def _choose_output(self) -> None:
         fmt = self.picker.target().format
@@ -293,11 +472,12 @@ class CreateDiskDialog(QDialog):
                                               f"{fmt.label} (*{fmt.extension});;All files (*)")
         if not path:
             return
-        out = Path(path)
-        if not out.suffix:
-            out = out.with_name(out.name + fmt.extension)
-        # the save dialog already asked whether to replace it
-        self._overwrite_ok = out if out.exists() else None
+        chosen = Path(path)
+        # the save dialog asked whether to replace the file it returned (not one with an added extension)
+        self._overwrite_ok = chosen if chosen.exists() else None
+        out = chosen if chosen.suffix else chosen.with_name(chosen.name + fmt.extension)
+        self._auto_name = False
+        self.folder = out.parent
         self.out_edit.setText(str(out))
         self._changed()
 
@@ -306,6 +486,44 @@ class CreateDiskDialog(QDialog):
         self._replan()
         if self.plan is None or not self.plan.ok:
             return
-        self.disk = self.plan.disk
+        if self.physical:
+            self.job = self.plan.job
+        else:
+            self.disk = self.plan.disk
         self._save()
         self.accept()
+
+
+class DiskPickerDialog(QDialog):
+    """Choose one of the computer's disks (to put it in the list of images to convert)."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setWindowTitle("Add a physical disk")
+        self.setMinimumWidth(560)
+        lay = QVBoxLayout(self)
+        lay.setSpacing(12)
+        lay.setContentsMargins(20, 18, 20, 16)
+        title = QLabel("Add a physical disk")
+        title.setObjectName("Title")
+        title.setFont(scaled_font(title, 1.3, bold=True))
+        lay.addWidget(title)
+        intro = QLabel("The disk goes into the list like an image file, and is converted into a virtual disk "
+                       "with everything on it. It is only read, never written to; you'll be asked for your "
+                       "password to read it.")
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+        self.chooser = DiskChooser()
+        lay.addWidget(self.chooser)
+        buttons = QDialogButtonBox()
+        self.add_btn = QPushButton("Add")
+        self.add_btn.setProperty("variant", "primary")
+        self.add_btn.setDefault(True)
+        buttons.addButton(self.add_btn, QDialogButtonBox.AcceptRole)
+        buttons.addButton("Cancel", QDialogButtonBox.RejectRole)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+        self.chooser.changed.connect(lambda: self.add_btn.setEnabled(self.chooser.path() is not None))
+        self.chooser.refresh()

@@ -217,11 +217,35 @@ the temporary folder, when the output drive has no sparse files, like FAT and ex
    1 MB blocks (`block_size`; Microsoft's advice for Linux guests), since Linux file systems spread
    their metadata over the disk and each touched 32 MB block would otherwise be allocated.
 
-The new disk is compared with the raw file: by `qemu-img compare`, or for a dynamic VHDX by
-VirtConvert&Create's own reader, which only reads the blocks either side holds (qemu-img's VHDX
-driver can't report empty blocks, so its compare would read all of a large empty disk).
+The new disk is compared with the raw file: by `qemu-img compare`, or for a VHDX (dynamic or fixed)
+by VirtConvert&Create's own reader, which only reads what either side holds: the raw file's data,
+and the VHDX blocks whose bytes in the file aren't holes. (qemu-img's VHDX driver can't report empty
+blocks, so its compare would read every byte of a large empty disk: over an hour for a few TB.)
 
-## 6. Testing
+## 6. Physical disks (`core/devices.py`)
+
+A computer's disks (and USB sticks, memory cards) can be the source of a conversion, or of a new
+disk ("Copy of a physical disk"). They come from `lsblk -J -b` (string or typed values, both kinds
+of util-linux), without zram, RAM disks, loop devices, empty card readers and eMMC boot areas;
+`lsblk` also gives the model, bus, partitions, file systems, labels and where they are mounted, so
+nothing has to be read before converting. When the disk is readable without a password (root, the
+`disk` group), its partition table is read directly instead, which also works without udev.
+
+Reading a disk needs root. VirtConvert&Create never runs qemu-img or itself as root for that: a
+few lines of Python started with `pkexec` (the app: a password dialog) or `sudo` (the command line)
+check that the path is a block device, open it read-only, and send the open file descriptor back
+over a Unix socket in a private folder (`SCM_RIGHTS`). The descriptor is checked to be that device,
+and the disk is served to qemu-img by the NBD server like a merged chain (`DeviceReader`: zeros past
+the end when the target is padded, a clear message for unreadable sectors). The copy runs as the
+user, can be cancelled, and the files belong to them.
+
+`make_plan` refuses to save the image on the disk being copied (the folder's device, through
+`/proc/self/mountinfo` for btrfs and the like, and LVM/LUKS layers down to the disks, is compared
+with the source), and when the disk is mounted it warns (more strongly for the system disk) and
+skips the comparison afterwards: a disk in use keeps changing, so it would fail for no fault of the
+copy.
+
+## 7. Testing
 
 - `tests/imagewriter.py` writes VHD, VHDX, VDI and DMG files (base and differencing, with partial
   sector bitmaps, zero blocks, 4 KB sectors, dirty logs, GPT and MBR partition tables) straight
@@ -237,5 +261,8 @@ driver can't report empty blocks, so its compare would read all of a large empty
   disks, and exports an OVA that VirtConvert&Create reads; merged VHD and VDI chains equal
   VirtualBox's reading of them, including a differencing VHD written by VirtualBox itself; merged
   VHDX chains equal libvhdi's.
+- `tests/test_devices.py` parses lsblk output of both kinds, checks the helper that hands over the
+  disk, and copies a loop device (as root, or with passwordless sudo, which also runs the real
+  helper).
 - `tests/test_gui.py` drives the app offscreen; `tools/installer-smoke.sh` installs, uses,
   updates and removes VirtConvert&Create inside containers of other distributions (CI).

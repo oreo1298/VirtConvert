@@ -110,7 +110,7 @@ class TargetPicker(QWidget):
             self.azure_chk.setChecked(target.azure)
         finally:
             self._quiet = False
-        self._show(target)
+        self._show(self.target())       # what the controls amount to (a stored "stream" etc.)
 
     def _show(self, target: Target) -> None:
         fmt = target.format

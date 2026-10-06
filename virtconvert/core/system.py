@@ -46,7 +46,7 @@ INSTALL_PREFIX = {
 MKFS_PACKAGES: dict[str, dict[str, str]] = {
     "fat": {"*": "dosfstools", "emerge": "sys-fs/dosfstools"},
     "exfat": {"*": "exfatprogs", "emerge": "sys-fs/exfatprogs"},
-    "ntfs": {"*": "ntfs-3g", "dnf": "ntfsprogs", "yum": "ntfsprogs", "rpm-ostree": "ntfsprogs",
+    "ntfs": {"*": "ntfs-3g", "pacman": "ntfsprogs", "dnf": "ntfsprogs", "yum": "ntfsprogs", "rpm-ostree": "ntfsprogs",
              "zypper": "ntfsprogs", "apk": "ntfs-3g-progs", "emerge": "sys-fs/ntfs3g"},
     "ext4": {"*": "e2fsprogs", "emerge": "sys-fs/e2fsprogs"},
     "btrfs": {"*": "btrfs-progs", "zypper": "btrfsprogs", "emerge": "sys-fs/btrfs-progs"},
@@ -205,6 +205,10 @@ def doctor() -> list[Check]:
     checks.append(Check("VirtualBox", bool(vbox), detail,
                         "Not needed for converting; install it to run the converted disks.",
                         optional=True))
+    elevate = shutil.which("pkexec")
+    checks.append(Check("pkexec (copying disks)", bool(elevate), elevate or "not installed",
+                        "The app asks for your password with it to read a physical disk (polkit package); "
+                        "on the command line sudo does it.", optional=True))
     from .create import FILESYSTEMS  # create imports this module
     for fs in FILESYSTEMS:
         tool = find_program(*fs.tools)

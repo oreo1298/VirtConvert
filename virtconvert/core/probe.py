@@ -36,6 +36,10 @@ class ImageInfo:
     member: str | None = None             # a disk inside an OVA archive
     offset: int = 0                       # ... where its data starts in the archive
     member_count: int = 0                 # ... how many disks the archive has
+    device: bool = False                  # a physical disk (devices.py), read through a helper
+    title: str = ""                       # ... its name: "Samsung SSD 870 EVO (sda)"
+    device_stem: str = ""                 # ... and the name for its image
+    mountpoints: list[str] = field(default_factory=list)   # ... where it is in use
     format: Format | None = None
     file_size: int = 0
     allocated: int = 0
@@ -68,13 +72,19 @@ class ImageInfo:
 
     @property
     def name(self) -> str:
+        if self.device and self.title:
+            return self.title
         return f"{self.path.name} › {self.member}" if self.member else self.path.name
 
     @property
     def stem(self) -> str:
         """For naming outputs: the archive's name, plus the disk's if it has several."""
+        if self.device:
+            return self.device_stem or self.path.name
         if self.member and self.member_count > 1:
-            return f"{self.path.stem}-{Path(self.member).stem}"
+            # two long names together must still make a file name (at most 255 bytes)
+            stem = f"{self.path.stem}-{Path(self.member).stem}"
+            return stem.encode("utf-8")[:200].decode("utf-8", "ignore")
         return self.path.stem
 
     @property
@@ -173,7 +183,7 @@ def probe(path: str | os.PathLike, member: str | None = None) -> ImageInfo:
             info.errors.append(f"{path.name} is not a regular file")
             return info
         base, size = 0, st.st_size
-        if member is None and path.suffix.lower() == ".ova" and ova.is_tar(os.pread(fd, 512, 0)):
+        if member is None and ova.is_tar(os.pread(fd, 512, 0)):
             disks = ova.list_ova(path)
             if len(disks) == 1:
                 member = info.member = disks[0].name
@@ -195,6 +205,14 @@ def probe(path: str | os.PathLike, member: str | None = None) -> ImageInfo:
             if disk.compression:
                 info.errors.append(f"{path.name} stores {member} compressed ({disk.compression}). Unpack it "
                                    f"first (tar -xf, then gunzip) and convert the disk file.")
+                return info
+            if disk.sparse:
+                info.errors.append(f"{path.name} stores {member} as a sparse file, which can't be read in "
+                                   "place. Unpack it first (tar -xf) and convert the disk file.")
+                return info
+            if disk.cut_off:
+                info.errors.append(f"{path.name} is cut off: it ends inside {member}. Was the download "
+                                   "interrupted?")
                 return info
             base, size = disk.offset, disk.size
             info.offset, info.member_count = base, len(disks)
@@ -228,6 +246,10 @@ def probe(path: str | os.PathLike, member: str | None = None) -> ImageInfo:
             info.errors.append(f"{info.name}: {exc}")
         except (struct.error, ValueError, IndexError) as exc:
             info.errors.append(f"{info.name}: the {fmt.label} headers are damaged ({exc})")
+        if member is not None and (info.differencing or info.backing_file):
+            # its parent would be another file in the archive, and qemu-img would read it without one
+            info.errors.append(f"{member} is a checkpoint or snapshot of another disk. Unpack the appliance "
+                               f"(tar -xf {path.name}) and convert the files.")
         expected = F.by_extension(member or str(path))
         if (expected is not None and expected is not fmt and expected not in (F.RAW, F.ISO)
                 and {expected, fmt} != {F.QCOW, F.QCOW2}):

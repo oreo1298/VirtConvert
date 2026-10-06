@@ -1,8 +1,9 @@
 # VirtConvert&Create: convert and create virtual disks
 
 VirtConvert&Create converts virtual disks between **VirtualBox, Hyper-V, VMware and QEMU/KVM** (VDI,
-VMDK, VHD, VHDX, QCOW2, QED, OVA appliances and raw images) and **creates new disks**: empty, or
-with a partition already formatted as NTFS, exFAT, FAT32, ext4, Btrfs or XFS. It is made for Arch
+VMDK, VHD, VHDX, QCOW2, QED, OVA appliances and raw images) and **creates new disks**: empty, with
+a partition already formatted as NTFS, exFAT, FAT32, ext4, Btrfs or XFS, or as a **copy of a
+physical disk** (a hard disk, an SSD, a USB stick or a memory card) to run in a virtual machine. It is made for Arch
 Linux and installs just as easily on Debian, Ubuntu, Fedora, openSUSE and the other popular
 distributions. There is a desktop app in the style of [EZP2019Linux](https://github.com/oreo1298/EZP2019Linux)
 and a command line for scripts.
@@ -22,6 +23,9 @@ the other formats; see [Updating from VirtConvert 1.0](#updating-from-virtconver
   on), with a GPT or MBR partition table, or with one partition formatted as NTFS, exFAT, FAT32,
   ext4, Btrfs or XFS, ready to attach to a virtual machine as an extra drive. Only the file
   system's own structures are written, so even a 2 TB disk is made in a second or two.
+- **Physical disks into virtual ones**: copy one of the computer's disks, or a USB stick or memory
+  card, into any of those formats, to run it in a virtual machine or keep it as an image. The
+  disk is only read; you're asked for your password to read it, and nothing else runs as root.
 - **Appliances**: the disks inside an OVA are read in place (an OVA with several disks shows one
   entry per disk), and converting to **OVA** packs the disk with a small machine description for
   **File → Import Appliance** in VirtualBox and VMware.
@@ -39,7 +43,8 @@ the other formats; see [Updating from VirtConvert 1.0](#updating-from-virtconver
   VHD files (fixed, rounded up to whole megabytes).
 - **Several images at once**: a list you can fill by drag and drop, converted one after the other
   with progress, speed and time left, and **Cancel**.
-- **Command line**: `virtconvert info`, `convert`, `create`, `verify`, `repair`, `formats` and `doctor`.
+- **Command line**: `virtconvert info`, `convert`, `create`, `disks`, `verify`, `repair`, `formats` and
+  `doctor`.
 - Dark and light themes that follow the desktop setting.
 
 VirtConvert&Create also fixes problems you would hit with `qemu-img` alone:
@@ -51,9 +56,13 @@ VirtConvert&Create also fixes problems you would hit with `qemu-img` alone:
 | VHDX files written by qemu-img can't even be read by VirtualBox (the "required" flag on their block table is missing). | Sets the flag the VHDX specification asks for, so VirtualBox can read them too. |
 | A disk inside an OVA has to be unpacked first, and an OVA can't be written at all. | Reads the disk inside the archive, and writes OVA files VirtualBox imports. |
 
-| A new disk with an NTFS partition | An appliance going to QEMU/KVM |
+| A new disk with an NTFS partition | A copy of a physical disk |
 |---|---|
-| ![New disk](docs/screenshots/create-dark.png) | ![Appliance](docs/screenshots/appliance-dark.png) |
+| ![New disk](docs/screenshots/create-dark.png) | ![Copy of a physical disk](docs/screenshots/physical-dark.png) |
+
+| An appliance going to QEMU/KVM | The empty window (light theme) |
+|---|---|
+| ![Appliance](docs/screenshots/appliance-dark.png) | ![Empty window](docs/screenshots/empty-light.png) |
 
 | Going back to Hyper-V (light theme) | Converting |
 |---|---|
@@ -83,7 +92,7 @@ dependencies `python`, `pyside6`, `qt6-svg`, `qt6-wayland` and `qemu-img`. For f
 add the file systems you want (ext4 needs nothing extra):
 
 ```sh
-sudo pacman -S --needed dosfstools exfatprogs ntfs-3g btrfs-progs xfsprogs
+sudo pacman -S --needed dosfstools exfatprogs ntfsprogs btrfs-progs xfsprogs
 ```
 
 - **Update:** pull the new code and rebuild from the same folder:
@@ -216,12 +225,14 @@ If qemu-img is missing, `virtconvert doctor` prints the command for your distrib
 
 To make a new disk, click **New disk** (<kbd>Ctrl</kbd>+<kbd>N</kbd>): pick the format and size,
 then **Empty**, **Partitioned** or **Formatted** (with the file system and a name), and where to
-save it. The box at the bottom says what you will get, or what's missing.
+save it. The box at the bottom says what you will get, or what's missing. To copy a physical disk
+instead, pick **Copy of a physical disk** at the top (see [below](#copying-a-physical-disk)).
 
 | Action | Shortcut |
 |---|---|
 | Add images | <kbd>Ctrl</kbd>+<kbd>O</kbd> |
 | New disk | <kbd>Ctrl</kbd>+<kbd>N</kbd> |
+| Add a physical disk to the list | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> |
 | Convert | <kbd>F5</kbd> |
 | Cancel | <kbd>Esc</kbd> |
 | Remove from the list | <kbd>Del</kbd> |
@@ -279,7 +290,7 @@ eight formats:
 
 | File system | For | Made with (package) |
 |---|---|---|
-| **NTFS** | Windows; Linux reads and writes it, macOS reads it | `mkntfs` (`ntfs-3g`; `ntfsprogs` on Fedora and openSUSE) |
+| **NTFS** | Windows; Linux reads and writes it, macOS reads it | `mkntfs` (`ntfsprogs` on Arch, Fedora and openSUSE; `ntfs-3g` elsewhere) |
 | **exFAT** | Sharing files between Windows, macOS and Linux | `mkfs.exfat` (`exfatprogs`) |
 | **FAT32** | Every system and firmware; files up to 4 GB | `mkfs.fat` (`dosfstools`) |
 | **ext4** | Linux's standard file system | `mkfs.ext4` (`e2fsprogs`, installed nearly everywhere) |
@@ -293,6 +304,42 @@ Microsoft recommends for Linux guests), so the file stays small.
 
 `virtconvert doctor` shows which file systems you can make and how to install the rest; the app
 names the missing package when you pick one.
+
+## Copying a physical disk
+
+VirtConvert&Create can turn one of the computer's disks into a virtual disk: to keep running an old
+PC's system in a virtual machine, to try a disk's system in VirtualBox before moving it, or to keep
+an image of a USB stick or memory card.
+
+- In the app: **New disk → Copy of a physical disk**, pick the disk, the format and where to save
+  it, and click **Copy the disk**. Or **Add → Add physical disk…** puts it in the list, to convert
+  it together with other images.
+- On the command line: `virtconvert disks` lists the disks, then
+  `virtconvert create old-pc.vdi --from /dev/sdb` (or `virtconvert convert /dev/sdb -t vhdx`).
+
+Reading a disk needs administrator rights, so you are asked for your password (a password dialog
+in the app, `sudo` in a terminal). Only a few lines run as root: they open the disk read-only and
+hand it over; the copying itself runs as you, can be cancelled, and the image belongs to you.
+Nothing is ever written to the disk.
+
+Things to know:
+
+- **Copy a disk that isn't in use.** The disk of the running system keeps changing while it is
+  read, so its copy may be inconsistent (and can't be checked afterwards). To copy the system disk,
+  start the computer from a live USB system (Ubuntu, Fedora, …), install VirtConvert&Create there or
+  run it from a USB stick, and save the copy on another drive. Other disks: unmount them first.
+- **Windows**: shut Windows down completely first (Fast Startup leaves the disk half-saved: hold
+  <kbd>Shift</kbd> while clicking *Shut down*). A BitLocker-encrypted disk stays encrypted in the
+  copy: have the recovery key at hand. In the virtual machine, Windows may need to be activated
+  again.
+- **Space**: a dynamic image leaves out the parts of the disk that are zeros (never written, or
+  trimmed); deleted files that weren't trimmed are copied like the rest. The image never goes on
+  the disk being copied: VirtConvert&Create refuses that.
+- **Booting the copy**: like a converted disk (see above): turn on *Enable EFI* in VirtualBox for a
+  disk that boots with UEFI; a Windows copy may stop at `INACCESSIBLE_BOOT_DEVICE` until the disk is
+  attached to a SATA controller.
+- **A failing disk**: if it has unreadable sectors, the copy stops at the first one and says where.
+  Rescue it with `ddrescue` into an image file first, then convert that image.
 
 ## Command line
 
@@ -320,6 +367,10 @@ virtconvert create data.vhdx -s 1T --fs ntfs -L Data     # GPT + NTFS, ready to 
 virtconvert create usb.vmdk -s 16G --fs fat32 --table mbr
 virtconvert create linux -t qcow2 -s 200G --fs ext4      # -> linux.qcow2
 
+virtconvert disks                                        # the physical disks
+virtconvert create old-pc.vdi --from /dev/sdb            # a copy of one (asks for your password)
+virtconvert convert /dev/sdc -t vhdx                     # the same through convert
+
 virtconvert verify disk.vhdx disk.vdi       # do two images contain the same disk?
 virtconvert repair disk.vhdx                # apply the log of a VHDX that wasn't closed cleanly
 virtconvert formats                         # formats, shortcuts and file systems
@@ -333,8 +384,9 @@ checkpoint's parent is, if it isn't found) and `-y` (don't ask about warnings).
 
 Options for `create`: `-s/--size` (`64G`, `512M`, `2T`; a plain number is megabytes), `-t/--to`
 (else the file name's extension decides), `--fixed`, `--split`, `--table gpt|mbr|none`,
-`--fs ntfs|exfat|fat32|ext4|btrfs|xfs` (implies `--table gpt`), `-L/--label`, `--overwrite`,
-`--no-verify`. Exit status: 0 done, 1 failed, 130 cancelled.
+`--fs ntfs|exfat|fat32|ext4|btrfs|xfs` (implies `--table gpt`), `-L/--label`, `--from DISK` (a copy
+of a physical disk instead), `--overwrite`, `--no-verify`. Exit status: 0 done, 1 failed, 130
+cancelled.
 
 ## Formats
 
@@ -364,6 +416,12 @@ qemu-img's DMG modules (a separate package on some distributions).
   qemu-img box in the toolbar.
 - **"Making NTFS needs mkntfs, which isn't installed"**: install the package the message names
   (also shown by `virtconvert doctor`), then try again.
+- **Copying a disk: "needs administrator rights, and they weren't given"**: the password dialog
+  was cancelled, or your account isn't an administrator. The app uses `pkexec` (package `polkit`,
+  installed on every desktop); without it, run `sudo virtconvert create … --from /dev/sdX` in a
+  terminal.
+- **Copying a disk: "can't be read at … (input/output error)"**: the disk has a damaged sector.
+  Rescue it with `ddrescue /dev/sdX rescued.img rescued.map`, then convert `rescued.img`.
 - **"The parent of … was not found"**: a checkpoint or snapshot needs the files it is based on.
   Put them in the same folder (Hyper-V keeps them in *Virtual Hard Disks*, VirtualBox in the VM's
   folder and its *Snapshots* folder), or use **Choose parent…** (`--parent` on the command line).
@@ -402,6 +460,10 @@ small read-only NBD server on a private socket, so no temporary copy of the disk
 inside an OVA is handed to qemu-img as a slice of the archive. Afterwards `qemu-img compare` checks
 the copy against the source.
 
+A physical disk is opened read-only by a few lines of Python run with `pkexec` or `sudo`, which
+hand the open disk back over a Unix socket; VirtConvert&Create then serves it to qemu-img through
+the same NBD server, as itself.
+
 A new disk is put together as a sparse file: the partition table is written into it, the mkfs
 program formats a sparse file the size of the partition, and the parts it wrote are copied in.
 qemu-img then writes the chosen format, skipping the empty parts. Details in
@@ -418,6 +480,7 @@ qemu-img then writes the chosen format, skipping the empty parts. Details in
 | `virtconvert/core/qemu.py` | Running qemu-img |
 | `virtconvert/core/convert.py` | Planning, converting, verifying, publishing |
 | `virtconvert/core/create.py` | New disks: partition, format, write |
+| `virtconvert/core/devices.py` | Physical disks: listing them, opening them read-only |
 | `virtconvert/core/partitions.py` | Reading and writing GPT and MBR partition tables |
 | `virtconvert/gui/` | PySide6 app |
 | `virtconvert/cli.py` | Command line |

@@ -35,3 +35,11 @@ class VerifyError(ConvertError):
 class OperationCancelled(ConvertError):
     def __init__(self, message: str = "Cancelled."):
         super().__init__(message)
+
+
+def os_error_text(exc: OSError) -> str:
+    """'No space left on device (/home/me/disk.vdi)': an OSError for people."""
+    text = exc.strerror or str(exc)
+    if exc.errno == 28:
+        text = "Not enough space: " + text[:1].lower() + text[1:]
+    return f"{text} ({exc.filename})" if exc.filename else text

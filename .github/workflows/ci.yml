@@ -81,7 +81,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed git python pyside6 qt6-svg qt6-wayland qemu-img \
             python-build python-installer python-setuptools python-wheel python-pytest \
-            e2fsprogs dosfstools exfatprogs ntfs-3g
+            e2fsprogs dosfstools exfatprogs ntfsprogs
           useradd -m builder
           chown -R builder: "$GITHUB_WORKSPACE"
           su builder -c "cd '$GITHUB_WORKSPACE' && makepkg --noconfirm"
@@ -90,10 +90,7 @@ jobs:
           virtconvert doctor
           virtconvert create /tmp/new.vdi -s 2G --fs ext4
           virtconvert create /tmp/usb.vmdk -s 1G --fs fat32 --table mbr
-          # which packages ship the mkfs programs on Arch (for the install hints)
-          pacman -Fy >/dev/null && pacman -F mkntfs mkfs.ntfs mkfs.exfat mkfs.fat mkfs.btrfs mkfs.xfs || true
-          pacman -Ql ntfs-3g | grep -E '/s?bin/' || true
-          if command -v mkntfs >/dev/null; then virtconvert create /tmp/win.vhdx -s 2G --fs ntfs; fi
+          virtconvert create /tmp/win.vhdx -s 2G --fs ntfs
           test -f /usr/share/applications/io.github.oreo1298.VirtConvert.desktop
           test -f /usr/share/icons/hicolor/scalable/apps/io.github.oreo1298.VirtConvert.svg
           QT_QPA_PLATFORM=offscreen python -c "import virtconvert.gui.main_window; print('import OK')"

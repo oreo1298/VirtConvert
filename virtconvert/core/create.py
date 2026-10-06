@@ -11,8 +11,11 @@ converted one (convert.write_image).
 
 from __future__ import annotations
 
+import bisect
 import errno
+import math
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -36,7 +39,8 @@ from .convert import (
     work_folder,
     write_image,
 )
-from .errors import ConvertError, OperationCancelled
+from .errors import ConvertError, OperationCancelled, os_error_text
+from .layers import DATA
 from .probe import probe
 from .qemu import QemuImg, source_spec
 from .util import MIB, TIB, human_bytes, round_up
@@ -77,16 +81,31 @@ FS_BY_KEY = {fs.key: fs for fs in FILESYSTEMS}
 FAT_LABEL_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 !#$%&'()-@^_`{}~")
 
 
+# what a file system's label limit counts
+LABEL_UNITS = {"ext4": "bytes", "xfs": "bytes", "btrfs": "bytes", "exfat": "utf16", "ntfs": "utf16"}
+
+
+def cut(text: str, limit: int, unit: str = "chars") -> str:
+    """TEXT shortened to LIMIT characters, UTF-8 bytes or UTF-16 code units, never in the middle
+    of a character."""
+    used = 0
+    kept = []
+    for c in text:
+        size = len(c.encode("utf-8")) if unit == "bytes" else (2 if ord(c) > 0xFFFF else 1) if unit == "utf16" else 1
+        if used + size > limit:
+            break
+        kept.append(c)
+        used += size
+    return "".join(kept)
+
+
 def clean_label(fs: FileSystem, label: str) -> str:
     """LABEL as FS can store it: FAT labels are upper case without special characters, and
-    every file system has a length limit."""
+    every file system has a length limit (in characters, UTF-8 bytes or UTF-16 units)."""
     label = " ".join(label.split())
     if fs.key == "fat32":
         label = "".join(c for c in label.upper() if c in FAT_LABEL_CHARS)
-    if fs.key in ("ext4", "xfs"):           # bytes, without cutting a character in two
-        encoded = label.encode("utf-8")[:fs.max_label]
-        return encoded.decode("utf-8", "ignore").strip()
-    return label[:fs.max_label].strip()
+    return cut(label, fs.max_label, LABEL_UNITS.get(fs.key, "chars")).strip()
 
 
 def parse_size(text: str) -> int:
@@ -100,7 +119,9 @@ def parse_size(text: str) -> int:
     try:
         value = float(cleaned)
     except ValueError:
-        raise ConvertError(f"'{text}' is not a size; write it like 20G, 512M or 1.5T.") from None
+        value = math.nan
+    if not math.isfinite(value) or value * factor > 1 << 62:
+        raise ConvertError(f"'{text}' is not a size; write it like 20G, 512M or 1.5T.")
     if value <= 0:
         raise ConvertError("The size must be larger than zero.")
     return int(value * factor)
@@ -148,7 +169,7 @@ class CreatePlan:
             fs = self.filesystem
             parts.append(f"{fs.label}" + (f" “{self.label}”" if self.label else "") if fs else "unformatted")
         else:
-            parts.append("empty")
+            parts.append("no partition table" if self.disk.filesystem else "empty")
         return ", ".join(parts)
 
 
@@ -191,7 +212,9 @@ def make_create_plan(disk: NewDisk, qemu: QemuImg | None) -> CreatePlan:
         minimum = fs.min_size if fs else MIB
         if length < minimum:
             what = f"A {fs.label} partition" if fs else "A partition"
-            plan.errors.append(f"{what} needs a disk of at least {human_bytes(minimum + 2 * MIB)}.")
+            # the partition starts at 1 MB; GPT keeps its backup in the last megabyte
+            smallest = round_up(minimum, MIB) + (2 if disk.scheme == "gpt" else 1) * MIB
+            plan.errors.append(f"{what} needs a disk of at least {human_bytes(smallest)}.")
         else:
             plan.partition = (offset, length)
             if fs is not None and fs.max_size and length > fs.max_size:
@@ -215,13 +238,24 @@ def make_create_plan(disk: NewDisk, qemu: QemuImg | None) -> CreatePlan:
             plan.errors.append(f"The qemu-img on this system was built without the '{driver}' format.")
 
     check_output(plan, disk.output, target, size, disk.overwrite, [])
-    check_space(plan, disk.output, size if target.fixed else 16 * MIB, fmt)
+    check_space(plan, disk.output, size if target.fixed else _metadata_estimate(fs, size), fmt)
     _notes(plan, fs)
     return plan
 
 
+def _metadata_estimate(fs: FileSystem | None, size: int) -> int:
+    """About how much a dynamic new disk takes while it's made (the file system's structures are
+    there twice for a moment): FAT32 writes its tables in full, NTFS its bitmap and log."""
+    if fs is None:
+        return 16 * MIB
+    extra = {"fat32": size // 300, "ntfs": 3 * (size // 32768 + 70 * MIB)}.get(fs.key, size // 2000)
+    return 16 * MIB + extra
+
+
 def _notes(plan: CreatePlan, fs: FileSystem | None) -> None:
     disk, target = plan.disk, plan.disk.target
+    if disk.scheme == "none" and fs is not None:
+        return                  # an error says what's wrong
     if disk.scheme == "none":
         plan.notes.append("The disk is empty: install an operating system on it, or partition and format "
                           "it inside the virtual machine.")
@@ -287,7 +321,11 @@ def _exfatprogs(tool: str) -> bool:
 
 
 def _run(cmd: list[str], cancel: CancelFn) -> None:
-    env = dict(os.environ, LC_ALL="C")
+    # English messages, but a UTF-8 character set: mkfs.exfat converts labels with it
+    ctype = os.environ.get("LC_ALL") or os.environ.get("LC_CTYPE") or os.environ.get("LANG") or ""
+    env = {k: v for k, v in os.environ.items() if k not in ("LC_ALL", "LANGUAGE")}
+    env["LC_MESSAGES"] = "C"
+    env["LC_CTYPE"] = ctype if re.search(r"utf-?8", ctype, re.I) else "C.UTF-8"
     try:
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, env=env, start_new_session=True)
@@ -384,6 +422,30 @@ def _merged(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return [(a, b) for a, b in out]
 
 
+def stored_ranges(layer) -> list[tuple[int, int]]:
+    """(offset, length) of the parts of the virtual disk the image file LAYER holds as data:
+    its allocated blocks, minus the holes in the file (a fixed VHDX is mostly holes)."""
+    file_data = data_ranges(layer.fd, layer.file_size)
+    starts = [a for a, _ in file_data]
+    found: list[tuple[int, int]] = []
+    pos, step = 0, 64 * MIB
+    while pos < layer.size:
+        n = min(step, layer.size - pos)
+        at = pos
+        for kind, length, file_offset in layer.map(pos, n):
+            if kind == DATA:
+                i = max(0, bisect.bisect_right(starts, file_offset) - 1)
+                while i < len(file_data) and file_data[i][0] < file_offset + length:
+                    lo = max(file_data[i][0], file_offset)
+                    hi = min(file_data[i][0] + file_data[i][1], file_offset + length)
+                    if lo < hi:
+                        found.append((at + lo - file_offset, hi - lo))
+                    i += 1
+            at += length
+        pos += n
+    return found
+
+
 def compare_with_reader(raw: Path, size: int):
     """A comparison of a new VHD, VHDX or VDI with the raw disk it was written from, using
     VirtConvert&Create's own readers: only the parts either of them stores are read."""
@@ -395,7 +457,7 @@ def compare_with_reader(raw: Path, size: int):
             return False, f"the disk is {info.virtual_size:,} bytes instead of {size:,}"
         with ChainReader.for_image(info) as reader, open(raw, "rb") as f:
             fd = f.fileno()
-            ranges = _merged(data_ranges(fd, size) + list(reader.layers[0].allocated_extents()))
+            ranges = _merged(data_ranges(fd, size) + stored_ranges(reader.layers[0]))
             total = sum(length for _, length in ranges) or 1
             done = 0
             for start, length in ranges:
@@ -490,13 +552,16 @@ def create_disk(plan: CreatePlan, qemu: QemuImg, progress: ProgressFn | None = N
                     part.unlink()
                     progress("Formatting", 1, 1)
                 os.fsync(f.fileno())
+        except OSError as exc:
+            shutil.rmtree(work, ignore_errors=True)
+            raise ConvertError(f"Making the new disk failed: {os_error_text(exc)}") from None
         except BaseException:
             shutil.rmtree(work, ignore_errors=True)
             raise
         log(f"qemu-img: new disk → {disk.target.label}, {human_bytes(size)}")
         # qemu-img can't skip the empty parts of a VHDX, so it would read all of a large new disk
         dynamic_vhdx = disk.target.format is F.VHDX and not disk.target.fixed
-        own = compare_with_reader(raw, size) if dynamic_vhdx else None
+        own = compare_with_reader(raw, size) if disk.target.format is F.VHDX else None
         # Linux file systems keep metadata all over the disk: small VHDX blocks keep the file small
         # (Microsoft recommends 1 MB blocks for Linux guests)
         extra = {"block_size": str(MIB)} if dynamic_vhdx and fs is not None and not fs.windows else None

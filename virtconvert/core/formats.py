@@ -25,7 +25,7 @@ class Format:
 
 VDI = Format("vdi", "VDI", "vdi", ".vdi", (".vdi",),
              "VirtualBox's own format. Snapshots, compacting and resizing all work.",
-             ("VirtualBox",))
+             ("VirtualBox",), max_size=511 * TIB, max_label="511 TB")
 VMDK = Format("vmdk", "VMDK", "vmdk", ".vmdk", (".vmdk",),
               "VMware's format, also fully supported by VirtualBox.",
               ("VirtualBox", "VMware"))
@@ -38,10 +38,10 @@ VHDX = Format("vhdx", "VHDX", "vhdx", ".vhdx", (".vhdx", ".avhdx"),
               ("Hyper-V",), max_size=64 * TIB, max_label="64 TB")
 QCOW2 = Format("qcow2", "QCOW2", "qcow2", ".qcow2", (".qcow2",),
                "QEMU/KVM's format (virt-manager, Proxmox, GNOME Boxes, UTM).",
-               ("QEMU/KVM", "Proxmox"))
+               ("QEMU/KVM", "Proxmox"), max_size=2048 * TIB, max_label="2048 TB")
 QED = Format("qed", "QED", "qed", ".qed", (".qed",),
              "QEMU's enhanced disk format; VirtualBox can use it too.",
-             ("QEMU/KVM", "VirtualBox"), can_be_fixed=False)
+             ("QEMU/KVM", "VirtualBox"), max_size=64 * TIB, max_label="64 TB", can_be_fixed=False)
 OVA = Format("ova", "OVA", "vmdk", ".ova", (".ova",),
              "A virtual appliance: the disk plus a description of the machine, for "
              "File → Import Appliance in VirtualBox and VMware.",

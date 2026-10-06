@@ -84,7 +84,8 @@ PM="$(detect_pm)"
 # (packages a release doesn't have are skipped).
 fs_pkgs_for() {
   case "$PM" in
-    pacman|apt-get|xbps-install|eopkg) echo "e2fsprogs dosfstools exfatprogs ntfs-3g btrfs-progs xfsprogs" ;;
+    pacman) echo "e2fsprogs dosfstools exfatprogs ntfsprogs btrfs-progs xfsprogs" ;;
+    apt-get|xbps-install|eopkg) echo "e2fsprogs dosfstools exfatprogs ntfs-3g btrfs-progs xfsprogs" ;;
     dnf|yum) echo "e2fsprogs dosfstools exfatprogs ntfsprogs btrfs-progs xfsprogs" ;;
     zypper) echo "e2fsprogs dosfstools exfatprogs ntfsprogs btrfsprogs xfsprogs" ;;
     apk) echo "e2fsprogs dosfstools exfatprogs ntfs-3g-progs btrfs-progs xfsprogs" ;;

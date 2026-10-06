@@ -19,13 +19,15 @@ distributions. Design notes: docs/HOW-IT-WORKS.md.
   `expand_sources` = OVA members / OVF files / .hdd bundle), `partitions.py` (read; `gpt_table`/`mbr_table`
   write), `convert.py` (`Target`, `Job`, `make_plan`, `execute` → `write_image` shared with create,
   `verify_images`, `repair`), `create.py` (`FILESYSTEMS`, `NewDisk`, `make_create_plan`, `create_disk`),
-  `system.py` (doctor, distro package names for qemu-img and the mkfs tools, `find_program` incl. sbin).
+  `system.py` (doctor, distro package names for qemu-img and the mkfs tools, `find_program` incl. sbin),
+  `devices.py` (physical disks: `list_disks` from lsblk, `inspect_device` → `ImageInfo.device`, `open_device`
+  with the pkexec/sudo fd-passing helper, `DeviceReader`, `disks_holding`).
 - `virtconvert/gui/` — PySide6. `main_window.py` (toolbar, Image / Convert to / Options cards, queue table,
   Activity log, status bar), `pickers.py` (`TargetPicker`: 2×4 format grid + variants, used by both windows),
   `create_dialog.py` (New disk), `queue.py` (`Item` incl. `member`, `QueueModel`, `StatusDelegate`),
   `dialogs.py`; `theme.py`, `icons.py`, `widgets.py`, `worker.py` are the suite's shared design system
   (EZP2019Linux).
-- `virtconvert/cli.py` — sub-commands info/convert/create/verify/repair/formats/doctor.
+- `virtconvert/cli.py` — sub-commands info/convert/create/disks/verify/repair/formats/doctor.
 - `tests/imagewriter.py` writes test images from the specs; `tools/screenshot.py` makes docs/screenshots;
   `tools/installer-smoke.sh` is the per-distro installer test CI runs in containers.
 
@@ -41,9 +43,12 @@ distributions. Design notes: docs/HOW-IT-WORKS.md.
   name taken during the run (the checked copy is kept and reported). Multi-file VMDKs: every file is published,
   data files first, descriptor last, with rollback; `Target.output_files` predicts the names (qemu's naming).
 - OVA: written from a stream VMDK made in `work/appliance/`, verified through `member_spec` inside the archive.
+- Physical disks: read only through a file descriptor from the root helper (never qemu-img as root), served via
+  NBD (`plan.uses_reader` is always true for devices). Never save onto the source disk (`_device_checks`); a
+  mounted disk gets `plan.can_verify = False`.
 - New disks: sparse raw scratch + `mkfs` on a partition-sized sparse file + `copy_allocated`; empty disks use
-  `qemu-img create`. Dynamic VHDX are verified with the own reader (`compare_with_reader`), since qemu's VHDX
-  driver has no block status and `qemu-img compare` would read every byte.
+  `qemu-img create`. VHDX targets are verified with the own reader (`compare_with_reader` + `stored_ranges`),
+  since qemu's VHDX driver has no block status and `qemu-img compare` would read every byte.
 - Readers check block tables against the file size and `Layer.pread` raises on short reads: never read a cut-off
   file as zeros. VHDX with 4 KB logical sectors always goes through the reader (qemu's driver is 512-only).
 - VHDX outputs get `vhdx.mark_regions_required()` (qemu leaves the flag clear; VirtualBox then refuses them).

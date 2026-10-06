@@ -15,8 +15,8 @@ from dataclasses import asdict
 from pathlib import Path
 
 from . import __version__
+from .core import devices, system
 from .core import formats as F
-from .core import system
 from .core.convert import (
     PRESETS,
     Job,
@@ -29,14 +29,14 @@ from .core.convert import (
     verify_images,
 )
 from .core.create import FILESYSTEMS, NewDisk, available_filesystems, create_disk, make_create_plan, parse_size
-from .core.errors import ConvertError, OperationCancelled, QemuImgMissingError
+from .core.errors import ConvertError, OperationCancelled, QemuImgMissingError, os_error_text
 from .core.images import expand_sources, inspect_image
 from .core.probe import ImageInfo
 from .core.qemu import QemuImg
 from .core.util import human_bytes, mmss
 
 SPINNER = "|/-\\"
-COMMANDS = ("gui", "info", "convert", "create", "verify", "repair", "formats", "doctor")
+COMMANDS = ("gui", "info", "convert", "create", "disks", "verify", "repair", "formats", "doctor")
 
 
 class Progress:
@@ -218,6 +218,18 @@ def cmd_create(args) -> int:
             raise SystemExit(f"Say which format {output.name} should be with --to (vdi, vmdk, vhd, vhdx, "
                              "qcow2, qed, ova, raw), or give it that extension.")
         target = parse_target(fmt.key, fixed=args.fixed, split=args.split)
+    if args.fixed and not target.fixed:
+        print(f"! {target.label} has no preallocated variant; making a dynamic one.")
+    if args.split and not target.split:
+        print(f"! Only VMDK files can be split; making one {target.format.label} file.")
+    if args.source:
+        if args.size or args.fs or args.table or args.label:
+            raise SystemExit("--from copies a disk as it is: leave out --size, --fs, --table and --label.")
+        return _copy_disk(args, qemu, Path(args.source), target, output)
+    if not args.size:
+        raise SystemExit("Give the size of the new disk with --size (e.g. -s 64G), or copy a disk with --from.")
+    if args.label and not args.fs:
+        print("! --label names a file system, and without --fs there is none: it's left out.")
     scheme = args.table or ("gpt" if args.fs else "none")
     disk = NewDisk(output=output, target=target, size=parse_size(args.size), scheme=scheme,
                    filesystem=args.fs or "", label=args.label or "", verify=not args.no_verify,
@@ -239,6 +251,53 @@ def cmd_create(args) -> int:
     check = ", checked" if outcome.verified else ""
     files = f"{len(outcome.files)} files" if len(outcome.files) > 1 else "file"
     print(f"  ✓ {outcome.output.name}: {human_bytes(outcome.file_size)} {files}{check} ({mmss(outcome.seconds)})")
+    return 0
+
+
+def _copy_disk(args, qemu: QemuImg, source: Path, target, output: Path) -> int:
+    """create --from: a virtual disk with the contents of a physical one."""
+    if not devices.is_device(source):
+        raise SystemExit(f"{source} is not a disk. 'virtconvert disks' lists them; to convert an image "
+                         "file use 'virtconvert convert'.")
+    info = inspect_image(source, qemu)
+    job = Job(source=source, target=target, output=output, verify=not args.no_verify,
+              overwrite=args.overwrite)
+    plan = make_plan(job, qemu, info)
+    print(f"New disk {job.output} from {info.name} ({source})")
+    print(f"  {human_bytes(plan.size)} {job.target.label}, a copy of {info.subformat.split(', ')[0]}"
+          f" {info.name}")
+    _print_messages(plan.errors, plan.warnings, [] if args.quiet else plan.notes)
+    if not plan.ok:
+        return 1
+    if plan.warnings and not args.yes and sys.stdin.isatty():
+        if input("  Continue anyway? [y/N] ").strip().lower() not in ("y", "yes"):
+            return 1
+    progress = Progress(args.quiet)
+    try:
+        outcome = execute(plan, qemu, progress)
+    finally:
+        progress.finish()
+    check = ", verified identical to the disk" if outcome.verified else ""
+    print(f"  ✓ {outcome.output.name}: {human_bytes(outcome.file_size)} file{check} ({mmss(outcome.seconds)})")
+    return 0
+
+
+def cmd_disks(args) -> int:
+    disks = devices.list_disks(include_loop=args.all)
+    if args.json:
+        print(json.dumps([dict(asdict(d), title=d.title, bus=d.bus) for d in disks], indent=2))
+        return 0
+    if not disks:
+        print("No disks found.")
+        return 0
+    width = max(len(d.path) for d in disks)
+    for d in disks:
+        print(f"{d.path:<{width}}  {d.title}")
+        print(f"{'':<{width}}  {d.summary}")
+        for part in d.partitions:
+            what = " ".join(x for x in (part.fstype, f"“{part.label}”" if part.label else "") if x)
+            print(f"{'':<{width}}    {part.name}: {human_bytes(part.size)}{'  ' + what if what else ''}")
+    print("\nCopy one into a virtual disk:  virtconvert create disk.vdi --from /dev/sdX")
     return 0
 
 
@@ -358,10 +417,12 @@ def build_parser() -> argparse.ArgumentParser:
                "  virtconvert convert -t vmdk *.vhdx   several at once\n"
                "  virtconvert convert -t azure os.vdi  fixed VHD for Azure\n"
                "  virtconvert convert -t ova vm.vhdx   an appliance for File > Import Appliance\n"
-               "  virtconvert convert app.ova          each disk of an appliance -> VDI\n"
+               "  virtconvert convert app.ova          each disk of an appliance -> VHDX\n"
                "  virtconvert verify disk.vhdx disk.vdi\n"
                "  virtconvert create new.vdi -s 50G   an empty 50 GB disk\n"
-               "  virtconvert create data.vhdx -s 1T --fs ntfs --label Data\n",
+               "  virtconvert create data.vhdx -s 1T --fs ntfs --label Data\n"
+               "  virtconvert disks                    list the physical disks\n"
+               "  virtconvert create pc.vdi --from /dev/sda   a copy of a physical disk\n",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"virtconvert {__version__}")
     sub = ap.add_subparsers(dest="command", metavar="COMMAND")
@@ -400,13 +461,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-q", "--quiet", action="store_true", help="no progress bar and notes")
     p.set_defaults(func=cmd_convert)
 
-    p = sub.add_parser("create", help="create a new disk: empty, or with a formatted partition",
+    p = sub.add_parser("create", help="create a new disk: empty, formatted, or a copy of a physical disk",
                        description="Create a new virtual disk. The format comes from the file name's "
                                    "extension or --to. With --fs the disk gets one partition (GPT unless "
                                    "--table mbr) formatted with that file system, ready to use as an extra "
-                                   "disk.")
+                                   "disk. With --from it becomes a copy of a physical disk (see "
+                                   "'virtconvert disks'); you're asked for your password to read it.")
     p.add_argument("output", metavar="FILE", help="the new disk, e.g. data.vdi")
-    p.add_argument("-s", "--size", required=True, help="its size: 20G, 512M, 2T (binary units)")
+    p.add_argument("--from", dest="source", metavar="DISK",
+                   help="copy this physical disk, e.g. /dev/sdb (the whole disk, or one partition)")
+    p.add_argument("-s", "--size", help="its size: 20G, 512M, 2T (binary units)")
     p.add_argument("-t", "--to", metavar="FORMAT", help="vdi, vmdk, vhd, vhdx, qcow2, qed, ova, raw, or a "
                                                          "shortcut like hyperv or azure (default: from FILE)")
     p.add_argument("--fixed", action="store_true", help="allocate the whole disk now")
@@ -422,6 +486,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-y", "--yes", action="store_true", help="don't ask about warnings")
     p.add_argument("-q", "--quiet", action="store_true", help="no progress and notes")
     p.set_defaults(func=cmd_create)
+
+    p = sub.add_parser("disks", help="list the physical disks that can be copied into a virtual disk")
+    p.add_argument("--all", action="store_true", help="include loop devices")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.set_defaults(func=cmd_disks)
 
     p = sub.add_parser("verify", help="check that two images contain the same disk")
     p.add_argument("first", metavar="IMAGE")
@@ -483,6 +552,9 @@ def main(argv: list[str] | None = None) -> int:
     except BrokenPipeError:             # `virtconvert formats | head`
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         return 0
+    except OSError as exc:              # a full drive, a name too long…
+        print(f"\nError: {os_error_text(exc)}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

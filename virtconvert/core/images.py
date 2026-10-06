@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import ova
+from . import devices, ova
 from .chain import LAYERS, open_layer, read_head, resolve_chain
 from .errors import ConvertError
 from .partitions import analyze
@@ -12,6 +12,14 @@ from .probe import ImageInfo, probe
 from .qemu import QemuImg, image_spec
 
 HEAD_BYTES = 128 * 1024
+
+
+def _tar(path: Path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return ova.is_tar(f.read(512))
+    except OSError:
+        return False
 
 
 def expand_sources(path: str | Path) -> list[tuple[Path, str | None]]:
@@ -24,7 +32,7 @@ def expand_sources(path: str | Path) -> list[tuple[Path, str | None]]:
             images = sorted(path.glob("*.hds"))
             if len(images) == 1:
                 return [(images[0], None)]
-        elif path.is_file() and lowered.endswith(".ova"):
+        elif path.is_file() and (lowered.endswith(".ova") or _tar(path)):
             disks = ova.list_ova(path)
             if len(disks) > 1:
                 return [(path, d.name) for d in disks]
@@ -46,6 +54,8 @@ def inspect_image(path: str | Path, qemu: QemuImg | None = None,
     ID doesn't match; CANDIDATES are extra files to look at when searching for
     parents. Never raises for a bad image: see info.errors.
     """
+    if member is None and devices.is_device(path):
+        return devices.inspect_device(path)      # a physical disk: lsblk, nothing is read
     info = probe(path, member)
     if info.format is None or info.format.container:
         return info

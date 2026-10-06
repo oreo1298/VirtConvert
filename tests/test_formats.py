@@ -4,6 +4,8 @@ import hashlib
 import io
 import os
 import random
+import shutil
+import subprocess
 import tarfile
 from pathlib import Path
 
@@ -260,3 +262,79 @@ def test_every_writable_format_has_a_test_reader():
     assert {f.key for f in F.ALL} >= {"vdi", "vmdk", "vhd", "vhdx", "qcow2", "qed", "ova", "raw", "qcow",
                                       "parallels", "dmg", "iso", "ovf"}
     assert F.default_target_for(F.VMDK) is F.VHDX and F.default_target_for(F.QCOW2) is F.VDI
+
+
+# ---------------------------------------------------------------------- review findings
+
+def test_ova_safety_checks(qemu, tmp_path):
+    # a differencing VHD inside an OVA: its parent is another file, so it must be unpacked first
+    from imagewriter import write_vhd as wv
+    base_id = wv(tmp_path / "base.vhd", 2 * MIB, {0: b"\x11" * SECTOR})
+    wv(tmp_path / "child.vhd", 2 * MIB, {}, "differencing", parent=tmp_path / "base.vhd", parent_id=base_id)
+    make_ova(tmp_path / "chain.ova", {"child.vhd": (tmp_path / "child.vhd").read_bytes(),
+                                      "base.vhd": (tmp_path / "base.vhd").read_bytes()},
+             descriptor(("child.vhd", 2), ("base.vhd", 2)))
+    info = inspect_image(tmp_path / "chain.ova", qemu, member="child.vhd")
+    assert not info.ok and "Unpack the appliance" in info.errors[-1]
+    # ./names, a descriptor without the extension, a raw disk whose size isn't whole sectors
+    data = os.urandom(1000300)
+    with tarfile.open(tmp_path / "odd.tar", "w", format=tarfile.USTAR_FORMAT) as tar:
+        for name, blob in (("./vm.ovf", descriptor(("disk.img", 1))), ("./disk.img", data)):
+            ti = tarfile.TarInfo(name)
+            ti.size = len(blob)
+            tar.addfile(ti, io.BytesIO(blob))
+    info = inspect_image(tmp_path / "odd.tar", qemu)
+    assert info.ok and info.member == "disk.img", info.errors
+    _, outcome = convert(qemu, tmp_path / "odd.tar", "vdi")
+    assert outcome.verified and read_all(qemu, source_spec(outcome.output, "vdi"), tmp_path)[:len(data)] == data
+    # a cut-off download
+    blob = (tmp_path / "odd.tar").read_bytes()
+    (tmp_path / "cut.ova").write_bytes(blob[:len(blob) // 2])
+    assert any("cut off" in e or "not a readable" in e for e in probe(tmp_path / "cut.ova").errors)
+
+
+def test_sparse_ova_member_is_refused(tmp_path):
+    tar = shutil.which("tar")
+    if tar is None:
+        pytest.skip("GNU tar is not installed")
+    with open(tmp_path / "disk.img", "wb") as f:
+        f.truncate(4 * MIB)
+        f.write(b"bbbb")
+    (tmp_path / "vm.ovf").write_bytes(descriptor(("disk.img", 4)))
+    res = subprocess.run([tar, "--format=gnu", "--sparse", "-cf", str(tmp_path / "sparse.ova"), "-C", str(tmp_path),
+                          "vm.ovf", "disk.img"], capture_output=True)
+    if res.returncode != 0:
+        pytest.skip("this tar can't write sparse members")
+    info = probe(tmp_path / "sparse.ova")
+    assert not info.ok and "sparse" in info.errors[0]
+
+
+def test_ova_name_with_long_unicode(qemu, tmp_path):
+    name = "開発用仮想マシン×4" * 3
+    write_vhd(tmp_path / f"{name}.vhd", 2 * MIB, {0: b"x" * SECTOR})
+    _, outcome = convert(qemu, tmp_path / f"{name}.vhd", "ova")
+    assert outcome.verified
+    with tarfile.open(outcome.output) as tar:
+        assert all(len(n.encode()) <= 100 for n in tar.getnames())
+
+
+def test_replacing_a_split_vmdk_removes_its_old_files(qemu, tmp_path):
+    write_vhd(tmp_path / "big.vhd", 5 * 1024 * MIB, {0: b"a" * SECTOR})
+    write_vhd(tmp_path / "small.vhd", 4 * MIB, {0: b"b" * SECTOR})
+    t = parse_target("vmdk", split=True)
+    convert(qemu, tmp_path / "big.vhd", t, out=tmp_path / "s.vmdk")
+    assert len(list(tmp_path.glob("s-s*.vmdk"))) == 3
+    (tmp_path / "s-s009.vmdk").write_bytes(b"not ours: not listed in the descriptor")
+    info = inspect_image(tmp_path / "small.vhd", qemu)
+    plan = make_plan(Job(source=tmp_path / "small.vhd", target=t, output=tmp_path / "s.vmdk", overwrite=True),
+                     qemu, info)
+    assert any("s-s002.vmdk, s-s003.vmdk" in w for w in plan.warnings)
+    execute(plan, qemu)
+    assert sorted(p.name for p in tmp_path.glob("s*.vmdk")) == ["s-s001.vmdk", "s-s009.vmdk", "s.vmdk"]
+    assert probe(tmp_path / "s.vmdk").ok
+
+
+def test_output_names_like_qemu(qemu, tmp_path):
+    t = parse_target("vmdk", fixed=True)
+    assert [p.name for p in t.output_files(tmp_path / "disk.", MIB)] == ["disk.", "disk-flat."]
+    assert [p.name for p in t.output_files(tmp_path / "a.b.vmdk", MIB)] == ["a.b.vmdk", "a.b-flat.vmdk"]

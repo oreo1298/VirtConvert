@@ -12,7 +12,7 @@ Job = Callable[[Callable[[str, int, int], None], Callable[[], bool]], Any]
 
 
 class _Operation(QObject):
-    progress = Signal(str, int, int)
+    progress = Signal(str, object, object)   # byte counts: a C++ int ends at 2 GB
     succeeded = Signal(object)
     failed = Signal(object)
     done = Signal()
@@ -52,7 +52,7 @@ class OperationRunner(QObject):
     """Executes one job at a time and reports back on the GUI thread."""
 
     started = Signal(str)
-    progress = Signal(str, int, int)
+    progress = Signal(str, object, object)   # byte counts: a C++ int ends at 2 GB
     finished = Signal(str)
 
     def __init__(self, parent: QObject | None = None):
@@ -101,7 +101,7 @@ class OperationRunner(QObject):
         if self._thread is not None:
             self._thread.wait(ms)
 
-    @Slot(str, int, int)
+    @Slot(str, object, object)
     def _relay_progress(self, stage: str, done: int, total: int) -> None:
         self.progress.emit(stage, done, total)
 

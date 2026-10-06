@@ -21,9 +21,10 @@ depends=('python' 'pyside6' 'qt6-svg' 'qt6-wayland' 'qemu-img')
 makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel')
 checkdepends=('python-pytest')
 optdepends=('virtualbox: run the converted disks'
+            'polkit: copy physical disks from the app (password dialog)'
             'dosfstools: new disks formatted with FAT32'
             'exfatprogs: new disks formatted with exFAT'
-            'ntfs-3g: new disks formatted with NTFS'
+            'ntfsprogs: new disks formatted with NTFS'
             'btrfs-progs: new disks formatted with Btrfs'
             'xfsprogs: new disks formatted with XFS')
 # vertconvert: the 1.1 build that was briefly misspelt VertConvert&Create
