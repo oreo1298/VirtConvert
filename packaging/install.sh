@@ -82,9 +82,9 @@ PM="$(detect_pm)"
 pkgs_for() {
   case "$PM" in
     pacman) echo "python pyside6 qt6-svg qt6-wayland qemu-img" ;;
-    apt-get) echo "python3 python3-venv qemu-utils python3-pyside6.qtwidgets python3-pyside6.qtsvg python3-pyside6.qtgui libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1 libdbus-1-3 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-shape0" ;;
+    apt-get) echo "python3 python3-venv qemu-utils python3-pyside6.qtwidgets python3-pyside6.qtsvg python3-pyside6.qtgui libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1 libdbus-1-3 libglib2.0-0t64 libglib2.0-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-shape0" ;;
     dnf|yum) echo "python3 python3-pyside6 qemu-img mesa-libGL mesa-libEGL libxkbcommon libxkbcommon-x11 fontconfig dbus-libs xcb-util-cursor xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil" ;;
-    zypper) echo "python3 python3-pyside6 qemu-tools Mesa-libGL1 Mesa-libEGL1 libxkbcommon0 libxkbcommon-x11-0 fontconfig libdbus-1-3 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0" ;;
+    zypper) echo "python3 python3-pyside6 qemu-tools Mesa-libGL1 Mesa-libEGL1 libxkbcommon0 libxkbcommon-x11-0 fontconfig libdbus-1-3 libglib-2_0-0 libgthread-2_0-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0" ;;
     xbps-install) echo "python3 python3-pyside6 qemu-img" ;;
     apk) echo "python3 py3-pip qemu-img py3-pyside6" ;;
     eopkg) echo "python3 qemu" ;;
