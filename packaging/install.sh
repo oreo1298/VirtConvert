@@ -188,11 +188,22 @@ tar -C "$HERE" --exclude=./.git --exclude=./build --exclude=./dist --exclude='*.
     --exclude='__pycache__' --exclude=./.venv --exclude=./src --exclude=./pkg -cf - . | tar -C "$BUILD_DIR" -xf -
 "$VENV/bin/python" -m pip install --quiet --upgrade --force-reinstall --no-deps "$BUILD_DIR" >/dev/null \
   || die "Installing VirtConvert&Create into $VENV failed"
+# PySide6 6.12 crashes with Python 3.10 and 3.11 (a reference-counting bug): those stay on 6.11
+PYSIDE_SPEC="PySide6-Essentials>=6.5"
+if "$VENV/bin/python" -c 'import sys; sys.exit(sys.version_info >= (3, 12))'; then
+  PYSIDE_SPEC="PySide6-Essentials>=6.5,<6.12"
+fi
 if "$VENV/bin/python" -c "import PySide6.QtWidgets, PySide6.QtSvg" 2>/dev/null; then
-  say "PySide6 (Qt) is there"
+  if "$VENV/bin/python" -c 'import sys, PySide6; sys.exit(not (sys.version_info < (3, 12) and PySide6.__version_info__[:2] >= (6, 12)))' 2>/dev/null; then
+    say "PySide6 $("$VENV/bin/python" -c 'import PySide6; print(PySide6.__version__)') crashes with this Python: installing 6.11"
+    "$VENV/bin/python" -m pip install --quiet "$PYSIDE_SPEC" \
+      || warn "Installing PySide6 6.11 failed: the app may crash after a while (see the README)"
+  else
+    say "PySide6 (Qt) is there"
+  fi
 else
   say "PySide6 isn't packaged here: installing PySide6-Essentials from PyPI (about 100 MB)"
-  "$VENV/bin/python" -m pip install --quiet "PySide6-Essentials>=6.5" \
+  "$VENV/bin/python" -m pip install --quiet "$PYSIDE_SPEC" \
     || warn "Installing PySide6 failed: the command line works, the app doesn't (see the README)"
 fi
 

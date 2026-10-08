@@ -187,3 +187,9 @@ def test_split_vmdk(qemu, images, capsys):
     assert cli.main(["convert", "-q", "-t", "vhdx", "--split", str(images / "Win.vhdx"),
                      "-o", str(images / "copy.vhdx")]) == 0
     assert "Only VMDK files can be split" in capsys.readouterr().out
+
+
+def test_pyside_that_crashes():
+    from virtconvert.core.system import pyside_crashes
+    assert pyside_crashes((6, 12), (3, 11)) and pyside_crashes((6, 13), (3, 10))
+    assert not pyside_crashes((6, 11), (3, 11)) and not pyside_crashes((6, 12), (3, 12))

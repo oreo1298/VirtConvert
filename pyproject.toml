@@ -29,9 +29,14 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-gui = ["PySide6-Essentials>=6.5"]
+# PySide6 6.12.0 loses a reference to None/True/False on most calls; Python 3.12+ doesn't mind (they're
+# immortal there), but 3.10 and 3.11 abort after a while: keep those on 6.11 (core/system.py checks it too)
+gui = ["PySide6-Essentials>=6.5; python_version >= '3.12'",
+       "PySide6-Essentials>=6.5,<6.12; python_version < '3.12'"]
 test = ["pytest>=7"]
-dev = ["pytest>=7", "PySide6-Essentials>=6.5", "ruff"]
+dev = ["pytest>=7", "ruff",
+       "PySide6-Essentials>=6.5; python_version >= '3.12'",
+       "PySide6-Essentials>=6.5,<6.12; python_version < '3.12'"]
 
 [project.scripts]
 virtconvert = "virtconvert.cli:main"

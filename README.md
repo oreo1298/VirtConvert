@@ -523,6 +523,10 @@ qemu-img's DMG modules (a separate package on some distributions).
 - **Not enough space**: a dynamic target needs about as much space as the data on the disk, a
   fixed one the whole disk size, an OVA twice that for a moment. VirtConvert&Create warns before
   it starts.
+- **The app crashes after a while ("none_dealloc" or "bool_dealloc")**: PySide6 6.12 has a bug that
+  only Python 3.10 and 3.11 run into. The installer keeps those on PySide6 6.11 (run
+  `packaging/update.sh` to fix an older installation); if you installed PySide6 yourself, run
+  `pip install 'PySide6-Essentials<6.12'`. `virtconvert doctor` says when this applies.
 - **Reporting a problem**: include the output of `virtconvert doctor` and `virtconvert info` for
   the image, and the Activity log.
 

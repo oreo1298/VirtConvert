@@ -162,6 +162,12 @@ class Check:
     optional: bool = False
 
 
+def pyside_crashes(pyside: tuple[int, ...], python: tuple[int, ...]) -> bool:
+    """PySide6 6.12 loses references to None, True and False; only Python 3.12 and newer, where those
+    can't be freed, survive that."""
+    return pyside >= (6, 12) and python < (3, 12)
+
+
 def vboxmanage() -> str | None:
     return shutil.which("VBoxManage") or shutil.which("vboxmanage")
 
@@ -188,7 +194,13 @@ def doctor() -> list[Check]:
     try:
         import PySide6  # noqa: F401
         from PySide6 import QtSvg  # noqa: F401
-        checks.append(Check("PySide6 (the app)", True, PySide6.__version__, optional=True))
+        if pyside_crashes(tuple(PySide6.__version_info__[:2]), sys.version_info[:2]):
+            checks.append(Check("PySide6 (the app)", False, f"{PySide6.__version__}, with Python {v.major}.{v.minor}",
+                                "This combination crashes after a while (a bug in PySide6 6.12). Install 6.11: "
+                                "pip install 'PySide6-Essentials<6.12', or update VirtConvert&Create's installation "
+                                "(packaging/update.sh).", optional=True))
+        else:
+            checks.append(Check("PySide6 (the app)", True, PySide6.__version__, optional=True))
     except Exception as exc:  # noqa: BLE001 - any import problem means no GUI
         checks.append(Check("PySide6 (the app)", False, f"not available ({exc.__class__.__name__})",
                             "Only the command line works. Install PySide6 (see the README).",
