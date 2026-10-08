@@ -11,7 +11,7 @@
 # Uninstall:  sudo pacman -Rns virtconvert
 
 pkgname=virtconvert
-pkgver=1.2.0
+pkgver=1.2.1
 pkgrel=1
 pkgdesc="Convert and create virtual disks: VDI, VMDK, VHD, VHDX, QCOW2, OVA and more, checkpoints included"
 arch=('any')

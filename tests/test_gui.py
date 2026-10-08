@@ -83,7 +83,9 @@ def add(win, *paths):
 def test_empty_state(window):
     assert window.queue_stack.currentIndex() == 0
     assert not window.act_convert.isEnabled()
-    assert window.img_empty.isVisible()
+    assert not window.side.isVisible() and not window.log_card.isVisible()    # just the drop zone
+    toolbar = [a.text() for a in window.toolbar.actions() if a.text()]
+    assert toolbar == ["Add…", "New disk…", "Write to disk…", "Convert"]
 
 
 def test_add_and_defaults(window, images):
@@ -94,12 +96,18 @@ def test_add_and_defaults(window, images):
     assert items[1].target.format is F.VHDX         # VirtualBox -> Hyper-V
     # the checkpoint is named after its disk, without clashing with Win.vhdx's output
     assert items[0].output.name == "Win.vdi" and items[2].output.name == "Win-2.vdi"
-    assert window.queue_stack.currentIndex() == 1
+    assert window.queue_stack.currentIndex() == 1 and window.side.isVisible()
     window.table.selectRow(2)
     pump()
-    assert window.img_grid._values["chain"].text() == "Win.vhdx"
-    assert window.img_grid._values["boot"].text() == "UEFI"
-    assert "Enable EFI" in window.plan_banner.text()
+    sub = window.img_sub.text()          # (the space on disk depends on the file system)
+    assert sub.startswith("8 MB · VHDX checkpoint · ") and sub.endswith(" MB file")
+    assert window.img_detail.text() == "GPT, 1 partition · boots with UEFI · based on Win.vhdx"
+    # the tips are one click away
+    assert not window.plan_banner.isVisibleTo(window) and "Details (2)" in window.details_link.text()
+    window.details_link.linkActivated.emit("notes")
+    assert "Enable EFI" in window.plan_banner.text() and "Hide details" in window.details_link.text()
+    assert window.settings.value("show_notes", type=bool)
+    window.details_link.linkActivated.emit("notes")
     assert window.act_convert.isEnabled()
 
 
@@ -221,7 +229,7 @@ def test_replacing_one_file_is_not_a_global_setting(window, images, monkeypatch)
                         staticmethod(lambda *a, **k: (str(images / "existing.vhdx"), "")))
     window.choose_output()
     item = window.model.items[0]
-    assert item.overwrite and not window.overwrite_chk.isChecked()
+    assert item.overwrite and not window.act_overwrite.isChecked()
     assert item.state == mw.READY and any("will be replaced" in w for w in item.plan.warnings)
 
 
@@ -493,7 +501,7 @@ def test_write_to_a_disk(window, qemu, images, fake_disk, monkeypatch):
     add(window, raw)
     window.table.selectRow(0)
     pump()
-    assert window.write_btn.isVisibleTo(window) and window.act_write.isEnabled()
+    assert window.act_write.isEnabled()
 
     answers = []
 
@@ -558,3 +566,41 @@ def test_write_dialog_chooses_a_disk_of_an_appliance(window, qemu, tmp_path, fak
     dialog._replan()
     assert dialog.write_btn.isEnabled(), dialog.banner.text()
     dialog.deleteLater()
+
+
+def test_the_log_folds_away(window, images):
+    window.show_log(True)                   # (an earlier window may have left it open: it's remembered)
+    window.show_log(False)
+    assert not window.log_card.isVisible() and window.log_btn.text() == "Activity"
+    add(window, images / "Linux.vdi")
+    window.log("Something to know", "warning")
+    assert window.log_btn.text() == "Activity · 1 warning" and not window.log_card.isVisible()
+    window.act_log.trigger()                                  # Ctrl+L
+    assert window.log_card.isVisible() and window.log_btn.text() == "Hide activity"
+    assert "Added Linux.vdi" in window.log_view.toPlainText()
+    window.show_log(False)
+    window.log("Something broke", "error")                    # errors unfold it
+    assert window.log_card.isVisible()
+    window.close()
+    assert window.settings.value("log_open", type=bool)
+
+
+def test_options_menu(window, images, monkeypatch):
+    add(window, images / "Linux.vdi")
+    window.table.selectRow(0)
+    pump()
+    texts = [a.text() for a in window.options_menu.actions() if a.text()]
+    assert texts == ["Replace files that already exist", "Save converted files in", "The source's folder",
+                     "Choose a folder…"]
+    out = images / "out"
+    out.mkdir()
+    monkeypatch.setattr(mw.QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: str(out)))
+    next(a for a in window.options_menu.actions() if a.text() == "Choose a folder…").trigger()
+    item = window.model.items[0]
+    assert item.output.parent == out and window.settings.value("output_folder") == str(out)
+    folder = next(a for a in window.options_menu.actions() if a.text() == "out")
+    assert folder.isChecked() and str(out) in window.options_btn.toolTip()
+    next(a for a in window.options_menu.actions() if a.text() == "The source's folder").trigger()
+    assert window.model.items[0].output.parent == images
+    window.act_overwrite.setChecked(True)
+    assert window.model.items[0].plan.job.overwrite

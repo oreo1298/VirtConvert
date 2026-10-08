@@ -18,11 +18,12 @@ ONE_KIND = {
 
 class TargetPicker(QWidget):
     """Format (two rows of four), its variant, Azure and 2 GB options, and the hypervisors
-    that open it. changed is emitted when the user changes any of them."""
+    that open it. changed is emitted when the user changes any of them. COMPACT leaves out the
+    format's description (it stays in the buttons' tooltips)."""
 
     changed = Signal()
 
-    def __init__(self, parent=None, label_width: int = 74, stream: bool = True):
+    def __init__(self, parent=None, label_width: int = 74, stream: bool = True, compact: bool = False):
         super().__init__(parent)
         self._quiet = False
         lay = QVBoxLayout(self)
@@ -38,6 +39,7 @@ class TargetPicker(QWidget):
         self.fmt_desc = QLabel()
         self.fmt_desc.setObjectName("Muted")
         self.fmt_desc.setWordWrap(True)
+        self.fmt_desc.setVisible(not compact)
         lay.addWidget(self.fmt_desc)
 
         works = QHBoxLayout()

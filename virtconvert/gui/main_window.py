@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
-    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -79,8 +78,6 @@ from .theme import mono_font, theme
 from .widgets import (
     Card,
     DropZone,
-    KeyValueGrid,
-    StatTile,
     StatusDot,
     Toast,
     badge,
@@ -125,6 +122,7 @@ class MainWindow(QMainWindow):
         self._updating_controls = False
         self.output_folder: Path | None = None
         self._shown_target = Target(F.VDI)
+        self._notes_open = False
 
         self.setWindowTitle(APP_NAME)
         self.setAcceptDrops(True)
@@ -186,6 +184,10 @@ class MainWindow(QMainWindow):
                               "Put one of this computer's disks in the list, to convert it into a virtual disk")
         self.act_write = a("Write to disk…", "drop", self.write_to_disk, "Ctrl+Shift+W",
                            "Put a virtual disk onto a USB stick, memory card, SSD or hard disk (erases it)")
+        self.act_log = a("Activity log", "log", lambda checked: self.show_log(checked), "Ctrl+L",
+                         "Show or hide what happened, step by step", checkable=True)
+        self.act_overwrite = QAction("Replace files that already exist", self, checkable=True)
+        self.act_overwrite.toggled.connect(lambda _c: self._replan_all())
         self.act_add_images = QAction("Add images…", self)
         self.act_add_images.triggered.connect(lambda: self.add_files())
         self.act_remove = a("Remove", "trash", self.remove_selected, "Del",
@@ -237,6 +239,7 @@ class MainWindow(QMainWindow):
         for act in self.theme_actions.values():
             tm.addAction(act)
         m.addAction(self.act_theme)
+        m.addAction(self.act_log)
         m = mb.addMenu("&Help")
         m.addAction(self.act_install_qemu)
         m.addAction(self.act_about)
@@ -270,8 +273,9 @@ class MainWindow(QMainWindow):
         bl.addLayout(text)
         tb.addWidget(brand)
         tb.addSeparator()
-        # (Clear done stays in the Images menu and the list's menu: the toolbar has to fit 1020 pixels)
-        for act in (self.act_add, self.act_new, self.act_remove):
+        # the everyday actions; Remove, Compare, Show file and the rest are in the menus and the
+        # list's right-click menu
+        for act in (self.act_add, self.act_new, self.act_write):
             tb.addAction(act)
         add_btn = tb.widgetForAction(self.act_add)
         add_menu = QMenu(add_btn)
@@ -281,9 +285,6 @@ class MainWindow(QMainWindow):
         add_btn.setPopupMode(QToolButton.MenuButtonPopup)
         tb.addSeparator()
         tb.addAction(self.act_convert)
-        tb.addSeparator()
-        for act in (self.act_verify, self.act_folder):
-            tb.addAction(act)
         convert_btn = tb.widgetForAction(self.act_convert)
         convert_btn.setProperty("accent", True)
         convert_btn.setMinimumWidth(72)
@@ -336,7 +337,6 @@ class MainWindow(QMainWindow):
         sl.setSpacing(14)
         sl.addWidget(self._build_image_card())
         sl.addWidget(self._build_target_card())
-        sl.addWidget(self._build_options_card())
         sl.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidget(side)
@@ -345,12 +345,16 @@ class MainWindow(QMainWindow):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setFixedWidth(372)
         scroll.viewport().setObjectName("Page")
+        scroll.hide()           # shown once there is something in the list
+        self.side = scroll
         outer.addWidget(scroll)
 
         self.splitter = QSplitter(Qt.Vertical)
         self.splitter.setChildrenCollapsible(False)
         self.splitter.addWidget(self._build_queue_card())
-        self.splitter.addWidget(self._build_log_card())
+        self.log_card = self._build_log_card()
+        self.log_card.hide()    # folded away until asked for, or until something goes wrong
+        self.splitter.addWidget(self.log_card)
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([520, 200])
@@ -364,9 +368,7 @@ class MainWindow(QMainWindow):
         self.img_badge.hide()
         card.header.addWidget(self.img_badge)
 
-        self.img_empty = QLabel("Add a disk image (VHD, VHDX, VDI, VMDK, QCOW2, OVA…) to convert it, "
-                                "or drop files on the window. New disk makes an empty or formatted one, "
-                                "or a copy of a physical disk.")
+        self.img_empty = QLabel("Select an image in the list to see what it holds.")
         self.img_empty.setObjectName("Muted")
         self.img_empty.setWordWrap(True)
         card.add(self.img_empty)
@@ -379,28 +381,16 @@ class MainWindow(QMainWindow):
         self.img_name.setFont(scaled_font(self.img_name, 1.15, bold=True))
         self.img_name.setWordWrap(True)
         self.img_name.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.img_sub = QLabel()
-        self.img_sub.setObjectName("Muted")
-        self.img_sub.setWordWrap(True)
+        self.img_sub = QLabel()          # size, kind, file size
+        self.img_detail = QLabel()       # partitions, boot mode, parents
         col = QVBoxLayout()
-        col.setSpacing(0)
+        col.setSpacing(1)
         col.addWidget(self.img_name)
-        col.addWidget(self.img_sub)
+        for label in (self.img_sub, self.img_detail):
+            label.setObjectName("Muted")
+            label.setWordWrap(True)
+            col.addWidget(label)
         body.addLayout(col)
-        tiles = QHBoxLayout()
-        tiles.setSpacing(8)
-        self.tile_size = StatTile("Disk size")
-        self.tile_file = StatTile("File size")
-        self.tile_format = StatTile("Format")
-        for t in (self.tile_size, self.tile_file, self.tile_format):
-            tiles.addWidget(t)
-        body.addLayout(tiles)
-        self.img_grid = KeyValueGrid()
-        self.img_grid.add_row("parts", "Partitions")
-        self.img_grid.add_row("boot", "Boots with")
-        self.img_grid.add_row("chain", "Based on")
-        self.img_grid.add_row("creator", "Created by")
-        body.addWidget(self.img_grid)
         self.img_banner = QLabel()
         self.img_banner.setObjectName("BannerError")
         self.img_banner.setWordWrap(True)
@@ -413,12 +403,8 @@ class MainWindow(QMainWindow):
         self.repair_btn = QPushButton("Repair…")
         self.repair_btn.setProperty("variant", "primary")
         self.repair_btn.clicked.connect(self.repair_selected)
-        self.write_btn = QPushButton("Write to disk…")
-        self.write_btn.setToolTip(self.act_write.statusTip())
-        self.write_btn.clicked.connect(self.write_to_disk)
         row.addWidget(self.parent_btn)
         row.addWidget(self.repair_btn)
-        row.addWidget(self.write_btn)
         row.addStretch(1)
         body.addLayout(row)
         card.add(self.img_body)
@@ -427,7 +413,7 @@ class MainWindow(QMainWindow):
     def _build_target_card(self) -> Card:
         card = Card("Convert to", "convert")
         self.target_card = card
-        self.picker = TargetPicker()
+        self.picker = TargetPicker(compact=True)
         self.picker.changed.connect(self._target_edited)
         card.add(self.picker)
         # the controls, by the names the tests and the screenshot tool use
@@ -451,54 +437,72 @@ class MainWindow(QMainWindow):
         out_row.addWidget(self.out_btn)
         card.add_layout(out_row)
 
+        opt_row = QHBoxLayout()
+        opt_row.setSpacing(8)
+        self.verify_chk = QCheckBox("Compare afterwards")
+        self.verify_chk.setToolTip("Reads both disks after converting and checks that every byte "
+                                   "is the same (takes about as long again)")
+        self.verify_chk.setChecked(True)
+        self.options_btn = QToolButton()
+        self.options_btn.setObjectName("Flat")
+        self.options_btn.setText("Options")
+        self.options_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.options_btn.setPopupMode(QToolButton.InstantPopup)
+        self.options_menu = QMenu(self.options_btn)
+        self.options_btn.setMenu(self.options_menu)
+        opt_row.addWidget(self.verify_chk)
+        opt_row.addStretch(1)
+        opt_row.addWidget(self.options_btn)
+        card.add_layout(opt_row)
+        self._fill_options_menu()
+
         self.plan_banner = QLabel()
         self.plan_banner.setObjectName("Banner")
         self.plan_banner.setWordWrap(True)
         self.plan_banner.setTextFormat(Qt.RichText)
         self.plan_banner.hide()
         card.add(self.plan_banner)
+        self.details_link = QLabel()        # the tips, one click away
+        self.details_link.setTextFormat(Qt.RichText)
+        self.details_link.linkActivated.connect(self._toggle_notes)
+        self.details_link.hide()
+        card.add(self.details_link)
         return card
 
-    def _build_options_card(self) -> Card:
-        card = Card("Options", "sliders")
-        self.verify_chk = QCheckBox("Compare the copy with the source")
-        self.verify_chk.setToolTip("Reads both disks after converting and checks that every byte "
-                                   "is the same (takes about as long again)")
-        self.verify_chk.setChecked(True)
-        self.overwrite_chk = QCheckBox("Replace files that already exist")
-        self.overwrite_chk.toggled.connect(lambda _c: self._replan_all())
-        card.add(self.verify_chk)
-        card.add(self.overwrite_chk)
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        lbl = QLabel("Save in")
-        lbl.setObjectName("Muted")
-        lbl.setMinimumWidth(74)
-        self.folder_box = QComboBox()
-        self.folder_box.addItem("The source's folder", None)
-        self.folder_box.addItem("Choose a folder…", "choose")
-        self.folder_box.activated.connect(self._folder_choice)
-        row.addWidget(lbl)
-        row.addWidget(self.folder_box, 1)
-        card.add_layout(row)
-        return card
+    def _fill_options_menu(self) -> None:
+        """Replacing existing files, and where converted files go."""
+        menu = self.options_menu
+        menu.clear()
+        menu.addAction(self.act_overwrite)
+        menu.addSection("Save converted files in")
+        group = QActionGroup(menu)
+        places = [("The source's folder", None)]
+        if self.output_folder is not None:
+            places.append((self.output_folder.name or str(self.output_folder), self.output_folder))
+        for text, folder in places:
+            act = menu.addAction(text)
+            act.setCheckable(True)
+            act.setChecked(folder == self.output_folder)
+            if folder is not None:
+                act.setToolTip(str(folder))
+            act.triggered.connect(lambda _c=False, f=folder: self._set_output_folder(f))
+            group.addAction(act)
+        menu.addAction("Choose a folder…", self._choose_folder)
+        where = str(self.output_folder) if self.output_folder else "the source's folder"
+        self.options_btn.setToolTip(f"Converted files go to {where}"
+                                    + ("; existing files are replaced" if self.act_overwrite.isChecked() else ""))
 
     def _build_queue_card(self) -> Card:
         card = Card("Images", "list")
         self.queue_count = QLabel()
         self.queue_count.setObjectName("Muted")
         card.header.insertWidget(2, self.queue_count)
-        add = QPushButton("Add…")
-        add.setProperty("variant", "ghost")
-        add.clicked.connect(lambda: self.add_files())
-        card.header.addWidget(add)
         card.body().setContentsMargins(1, 12, 1, 1)
         card.header.setContentsMargins(15, 0, 9, 0)
 
         self.queue_stack = QStackedWidget()
-        self.drop_zone = DropZone(text="Hyper-V disks become VDI for VirtualBox; VirtualBox disks go to VHDX for "
-                                       "Hyper-V; or pick VMDK, QCOW2, OVA and more. Checkpoints and snapshots are "
-                                       "merged with their parents.", secondary="New disk…")
+        self.drop_zone = DropZone(text="VHD, VHDX, VDI, VMDK, QCOW2, OVA and more; checkpoints are merged with "
+                                       "their parents.", secondary="New disk…")
         self.drop_zone.addRequested.connect(lambda: self.add_files())
         self.drop_zone.secondaryRequested.connect(self.new_disk)
         holder = QWidget()
@@ -541,6 +545,10 @@ class MainWindow(QMainWindow):
         clear.setProperty("variant", "ghost")
         clear.clicked.connect(self._clear_log)
         card.header.addWidget(clear)
+        hide = QPushButton("Hide")
+        hide.setProperty("variant", "ghost")
+        hide.clicked.connect(lambda: self.show_log(False))
+        card.header.addWidget(hide)
         card.body().setContentsMargins(1, 10, 1, 1)
         card.header.setContentsMargins(15, 0, 9, 0)
         self.log_view = QPlainTextEdit()
@@ -583,6 +591,14 @@ class MainWindow(QMainWindow):
         self.last_op = QLabel()
         self.last_op.setObjectName("Muted")
         sb.addPermanentWidget(self.last_op)
+        self.log_btn = QToolButton()
+        self.log_btn.setObjectName("Flat")
+        self.log_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.log_btn.setToolTip("Show or hide the activity log (Ctrl+L)")
+        self.log_btn.clicked.connect(lambda: self.show_log(not self.log_card.isVisible()))
+        sb.addPermanentWidget(self.log_btn)
+        self._unseen = 0
+        self._show_log_button()
 
     # ------------------------------------------------------------------ theming
 
@@ -593,6 +609,8 @@ class MainWindow(QMainWindow):
         self.act_convert.setIcon(icons.icon("play", pal.accent_text, pal.text_faint))
         self.brand_icon.setPixmap(icons.pixmap("convert", pal.accent, 30))
         self.out_btn.setIcon(icons.icon("folder", pal.text_muted))
+        self.options_btn.setIcon(icons.icon("sliders", pal.text_muted))
+        self.log_btn.setIcon(icons.icon("log", pal.text_muted))
         btn = self.toolbar.widgetForAction(self.act_convert)
         btn.style().unpolish(btn)
         btn.style().polish(btn)
@@ -619,6 +637,29 @@ class MainWindow(QMainWindow):
         self.log_view.appendHtml(self._log_html(stamp, level, message))
         bar = self.log_view.verticalScrollBar()
         bar.setValue(bar.maximum())
+        if hasattr(self, "log_btn") and not self.log_card.isVisible():
+            if level == "error":
+                self.show_log(True)         # something went wrong: show what happened
+            elif level == "warning":
+                self._unseen += 1
+                self._show_log_button()
+
+    def show_log(self, visible: bool) -> None:
+        """Unfold or fold away the Activity log under the list."""
+        self.log_card.setVisible(visible)
+        self.act_log.setChecked(visible)
+        if visible:
+            self._unseen = 0
+            bar = self.log_view.verticalScrollBar()
+            bar.setValue(bar.maximum())
+        self._show_log_button()
+
+    def _show_log_button(self) -> None:
+        if self.log_card.isVisible():
+            self.log_btn.setText("Hide activity")
+        else:
+            n = self._unseen
+            self.log_btn.setText(f"Activity · {n} warning{'s' if n > 1 else ''}" if n else "Activity")
 
     def _log_html(self, stamp: str, level: str, message: str) -> str:
         pal = theme.palette
@@ -640,6 +681,8 @@ class MainWindow(QMainWindow):
     def _clear_log(self) -> None:
         self._log_entries.clear()
         self.log_view.clear()
+        self._unseen = 0
+        self._show_log_button()
 
     # ------------------------------------------------------------------ qemu-img
 
@@ -807,7 +850,7 @@ class MainWindow(QMainWindow):
         elif item.output.suffix.lower() not in item.target.format.extensions:
             item.output = item.output.with_suffix(item.target.format.extension)
         job = Job(source=item.source, target=item.target, output=item.output,
-                  overwrite=self.overwrite_chk.isChecked() or item.overwrite, parents=dict(item.parents),
+                  overwrite=self.act_overwrite.isChecked() or item.overwrite, parents=dict(item.parents),
                   force_parent=item.force_parent, member=item.member)
         item.plan = make_plan(job, self.qemu, item.info)
         item.target = job.target
@@ -843,6 +886,7 @@ class MainWindow(QMainWindow):
     def _queue_changed(self) -> None:
         items = self.model.items
         self.queue_stack.setCurrentIndex(1 if items else 0)
+        self.side.setVisible(bool(items))
         if items:
             total = sum(i.info.virtual_size for i in items if i.info is not None)
             done = sum(1 for i in items if i.state == DONE)
@@ -873,22 +917,17 @@ class MainWindow(QMainWindow):
             self.img_sub.setText("Reading…" if item.state == INSPECTING else item.message)
             set_badge(self.img_badge, "READING" if item.state == INSPECTING else "ERROR",
                       "Idle" if item.state == INSPECTING else "Bad")
-            for t in (self.tile_size, self.tile_file, self.tile_format):
-                t.set("—")
-            for key in ("parts", "boot", "chain", "creator"):
-                self.img_grid.set(key, "—")
+            self.img_detail.setText("")
             self.img_banner.hide()
             self.parent_btn.hide()
             self.repair_btn.hide()
-            self.write_btn.hide()
             return
-        fmt = info.format
-        self.img_sub.setText(info.label if fmt else "Not a disk image")
-        tip = [str(item.source)]
-        if info.disk_id:
-            tip.append(f"Disk ID {info.disk_id}")
-        self.img_name.setToolTip("\n".join(tip))
-        self.img_sub.setToolTip("\n".join(tip))
+        sub, detail, tip = _summary(item, info)
+        self.img_sub.setText(sub)
+        self.img_detail.setText(detail)
+        self.img_detail.setVisible(bool(detail))
+        for label in (self.img_name, self.img_sub, self.img_detail):
+            label.setToolTip(tip)
         if not info.ok:
             set_badge(self.img_badge, "PROBLEM", "Bad")
         elif info.device:
@@ -897,25 +936,6 @@ class MainWindow(QMainWindow):
             set_badge(self.img_badge, "CHECKPOINT", "Info")
         else:
             set_badge(self.img_badge, "OK", "Ok")
-        self.tile_size.set(human_bytes(info.virtual_size) if info.virtual_size else "—",
-                           f"{info.virtual_size:,} bytes")
-        self.tile_file.set(human_bytes(info.allocated) if fmt else "—",
-                           f"{info.file_size:,} bytes, {info.allocated:,} on disk")
-        block = f", {human_bytes(info.block_size)} blocks" if info.block_size else ""
-        self.tile_format.set("Disk" if info.device else fmt.label if fmt else "?", f"{info.subformat}{block}")
-        parts = info.partitions
-        self.img_grid.set("parts", parts.label if parts else "—", parts.summary() if parts else "")
-        self.img_grid.set("boot", parts.boot_label if parts and parts.firmware else "—")
-        if info.chain:
-            chain = " → ".join(p.name for p in info.chain)
-            self.img_grid.set("chain", chain, "\n".join(str(p.path) for p in info.chain))
-        elif info.differencing:
-            self.img_grid.set("chain", "parent not found")
-        elif info.backing_file:
-            self.img_grid.set("chain", Path(info.backing_file.replace("\\", "/")).name, info.backing_file)
-        else:
-            self.img_grid.set("chain", "— (a complete disk)")
-        self.img_grid.set("creator", info.creator or "—")
         problems = info.errors
         if problems:
             self.img_banner.setText("<br>".join(f"✕ {html.escape(p)}" for p in problems))
@@ -926,7 +946,6 @@ class MainWindow(QMainWindow):
         self.parent_btn.setVisible(info.differencing and (not info.chain or bool(problems))
                                    and item.editable and not info.member)
         self.repair_btn.setVisible(info.dirty and item.editable and not info.member)
-        self.write_btn.setVisible(info.ok and fmt is not None and not fmt.container)
 
     def _show_target(self, item: Item | None) -> None:
         self._updating_controls = True
@@ -961,10 +980,20 @@ class MainWindow(QMainWindow):
                     lines.append(f'<span style="color:{pal.danger}">✕</span> {html.escape(e)}')
             for w in plan.warnings:
                 lines.append(f'<span style="color:{pal.warning}">!</span> {html.escape(w)}')
-            for n in plan.notes:
-                lines.append(f'<span style="color:{pal.accent}">•</span> {html.escape(n)}')
+            if plan.notes and self._notes_open:
+                lines += [f'<span style="color:{pal.accent}">•</span> {html.escape(n)}' for n in plan.notes]
         self.plan_banner.setText("<br>".join(lines))
         self.plan_banner.setVisible(bool(lines))
+        # the tips (how to boot it, what gets merged…) stay one click away
+        notes = plan.notes if plan is not None and item.state != DONE else []
+        link = "Hide details" if self._notes_open else f"Details ({len(notes)})"
+        self.details_link.setText(f'<a href="notes" style="color:{pal.accent}; text-decoration:none">{link}</a>')
+        self.details_link.setVisible(bool(notes))
+
+    def _toggle_notes(self, _link: str = "") -> None:
+        self._notes_open = not self._notes_open
+        self.settings.setValue("show_notes", self._notes_open)
+        self._show_plan(self.current_item())
 
     def _target_edited(self) -> None:
         """Apply what was changed in the picker (only that: with several images selected, each keeps
@@ -1036,29 +1065,15 @@ class MainWindow(QMainWindow):
         self._show_target(item)
         self._update_actions()
 
-    def _folder_choice(self, index: int) -> None:
-        if self.folder_box.itemData(index) == "choose":
-            folder = QFileDialog.getExistingDirectory(self, "Save converted disks in",
-                                                      str(self.output_folder or self._last_dir()))
-            if folder:
-                self._set_output_folder(Path(folder))
-            else:
-                self._set_output_folder(self.output_folder)
-        elif index == 0:
-            self._set_output_folder(None)
-        else:
-            self._set_output_folder(Path(self.folder_box.itemData(index)))
+    def _choose_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Save converted disks in",
+                                                  str(self.output_folder or self._last_dir()))
+        if folder:
+            self._set_output_folder(Path(folder))
 
     def _set_output_folder(self, folder: Path | None) -> None:
         self.output_folder = folder
-        while self.folder_box.count() > 2:
-            self.folder_box.removeItem(2)
-        if folder is not None:
-            self.folder_box.addItem(folder.name or str(folder), str(folder))
-            self.folder_box.setItemData(2, str(folder), Qt.ToolTipRole)
-            self.folder_box.setCurrentIndex(2)
-        else:
-            self.folder_box.setCurrentIndex(0)
+        self._fill_options_menu()
         self.settings.setValue("output_folder", str(folder) if folder else "")
         for item in self.model.items:
             if not item.output_custom and item.state not in (RUNNING, WAITING, DONE):
@@ -1085,7 +1100,6 @@ class MainWindow(QMainWindow):
         self.act_cancel.setEnabled(busy)
         self.act_add.setEnabled(True)
         self.act_write.setEnabled(not busy and self.qemu is not None)
-        self.write_btn.setEnabled(not busy and self.qemu is not None)
 
     def remove_selected(self) -> None:
         items = [i for i in self.selected_items() if i.state not in (RUNNING, WAITING)]
@@ -1259,7 +1273,7 @@ class MainWindow(QMainWindow):
         qemu = self.qemu
         job = Job(source=item.source, target=item.target, output=item.output,
                   verify=self.verify_chk.isChecked(),
-                  overwrite=self.overwrite_chk.isChecked() or item.overwrite,
+                  overwrite=self.act_overwrite.isChecked() or item.overwrite,
                   parents=dict(item.parents), force_parent=item.force_parent, member=item.member,
                   elevate="pkexec")
         log = self.logLine.emit
@@ -1562,7 +1576,9 @@ class MainWindow(QMainWindow):
             except (TypeError, ValueError):
                 pass
         self.verify_chk.setChecked(s.value("verify", True, type=bool))
-        self.overwrite_chk.setChecked(s.value("overwrite", False, type=bool))
+        self.act_overwrite.setChecked(s.value("overwrite", False, type=bool))
+        self._notes_open = s.value("show_notes", False, type=bool)
+        self.show_log(s.value("log_open", False, type=bool))
         folder = str(s.value("output_folder", "") or "")
         if folder and Path(folder).is_dir():
             self._set_output_folder(Path(folder))
@@ -1572,7 +1588,8 @@ class MainWindow(QMainWindow):
         s.setValue("geometry", self.saveGeometry())
         s.setValue("splitter", self.splitter.sizes())
         s.setValue("verify", self.verify_chk.isChecked())
-        s.setValue("overwrite", self.overwrite_chk.isChecked())
+        s.setValue("overwrite", self.act_overwrite.isChecked())
+        s.setValue("log_open", self.log_card.isVisible())
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self.runner.busy:
@@ -1586,6 +1603,37 @@ class MainWindow(QMainWindow):
         self._pool.shutdown(wait=False, cancel_futures=True)
         self._save_settings()
         event.accept()
+
+
+def _summary(item: Item, info) -> tuple[str, str, str]:
+    """The Image card's two lines and tooltip: '64 GB · VHDX checkpoint · 6.2 MB file',
+    'GPT, 4 partitions · boots with UEFI · based on Windows 11.vhdx'."""
+    if info.format is None:
+        return "Not a disk image", "", str(item.source)
+    first = [human_bytes(info.virtual_size), item.from_label]
+    if not info.device and info.allocated:
+        first.append(f"{human_bytes(info.allocated)} file")
+    parts = info.partitions
+    second = []
+    if parts is not None:
+        second.append(parts.label)
+        if parts.firmware:
+            second.append(f"boots with {parts.boot_label}")
+    if info.chain:
+        second.append(f"based on {' → '.join(p.name for p in info.chain)}")
+    elif info.differencing:
+        second.append("parent not found")
+    elif info.backing_file:
+        second.append(f"based on {Path(info.backing_file.replace(chr(92), '/')).name}")
+    tip = [str(item.source), f"{info.label}, {info.virtual_size:,} bytes"]
+    if parts is not None and parts.partitions:
+        tip.append(parts.summary())
+    tip += [f"Based on {p.path}" for p in info.chain]
+    if info.creator:
+        tip.append(f"Created by {info.creator}")
+    if info.disk_id:
+        tip.append(f"Disk ID {info.disk_id}")
+    return " · ".join(first), " · ".join(second), "\n".join(tip)
 
 
 def _short(text: str, limit: int = 90) -> str:

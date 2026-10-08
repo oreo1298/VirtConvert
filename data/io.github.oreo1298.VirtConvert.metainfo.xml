@@ -57,6 +57,13 @@
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.2.1" date="2026-10-08">
+      <description>
+        <p>A tidier main window: the toolbar keeps the everyday actions, the image is summed up in two
+        lines, the options moved into Convert to, the activity log folds away (and opens by itself when
+        something goes wrong), and tips are behind Details.</p>
+      </description>
+    </release>
     <release version="1.2.0" date="2026-10-06">
       <description>
         <ul>

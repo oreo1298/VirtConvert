@@ -198,7 +198,7 @@ virtconvert doctor
 ```
 
 ```
-VirtConvert&Create 1.2.0 on Ubuntu 24.04.5 LTS
+VirtConvert&Create 1.2.1 on Ubuntu 24.04.5 LTS
   ✓ Python             3.12.3
   ✓ qemu-img           8.2.2 (/usr/bin/qemu-img)
   ✓ PySide6 (the app)  6.11.2
@@ -223,11 +223,17 @@ If qemu-img is missing, `virtconvert doctor` prints the command for your distrib
    are set to become VDI files for VirtualBox, VirtualBox and VMware disks to become VHDX files for
    Hyper-V; the app remembers what you pick for each. For a checkpoint (`.avhdx`), add the newest
    one: it is merged with its parents. An OVA with several disks becomes one entry per disk.
-3. Select an image to see what it holds (size, partitions, how it boots, its parents) and to
-   change the target under **Convert to** (eight formats; the variant below them), and the file
-   name under **Save as**. The box under it lists anything worth knowing before converting.
+3. Select an image: the **Image** box sums up what it holds (size, partitions, how it boots, its
+   parents; hover for more). Change the target under **Convert to** (eight formats; the variant below
+   them) and the file name under **Save as**. Warnings show right there; **Details** has the tips
+   (how to boot it in VirtualBox or Hyper-V, what gets merged).
 4. Click **Convert** (<kbd>F5</kbd>). The converted file is saved next to the original unless you
-   pick a folder under **Options**. Double-click a finished image to open its folder.
+   pick a folder under **Options** (which also has *Replace files that already exist*). Double-click
+   a finished image to open its folder.
+
+Remove, Compare and the others are in the menus and in the list's right-click menu. **Activity**
+at the bottom right unfolds the log of what happened (<kbd>Ctrl</kbd>+<kbd>L</kbd>); it opens by
+itself when something goes wrong.
 
 To make a new disk, click **New disk** (<kbd>Ctrl</kbd>+<kbd>N</kbd>): pick the format and size,
 then **Empty**, **Partitioned** or **Formatted** (with the file system and a name), and where to
@@ -247,6 +253,7 @@ to disk…** (see [below](#writing-a-virtual-disk-onto-a-physical-disk)).
 | Cancel | <kbd>Esc</kbd> |
 | Remove from the list | <kbd>Del</kbd> |
 | Compare two images | <kbd>Ctrl</kbd>+<kbd>K</kbd> |
+| Show or hide the activity log | <kbd>Ctrl</kbd>+<kbd>L</kbd> |
 | Open the folder of the converted file | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> |
 | Toggle dark/light theme | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> |
 

@@ -24,8 +24,9 @@ distributions. Design notes: docs/HOW-IT-WORKS.md.
   with the pkexec/sudo fd-passing helper (read-only, or `write=True`: O_RDWR|O_EXCL), `DeviceReader`,
   `DeviceWriter`, `disks_holding`, `unmount`), `writedisk.py` (`DiskWrite`, `make_write_plan`, `write_to_disk`:
   an image onto a physical disk through the writable NBD server, verify, `partitions.move_backup_gpt`).
-- `virtconvert/gui/` — PySide6. `main_window.py` (toolbar, Image / Convert to / Options cards, queue table,
-  Activity log, status bar), `pickers.py` (`TargetPicker`: 2×4 format grid + variants, used by both windows),
+- `virtconvert/gui/` — PySide6. `main_window.py` (toolbar Add/New disk/Write to disk/Convert; a sidebar shown
+  once the list has images: Image summary, Convert to with Compare and an Options menu; the queue table; the
+  Activity log folded away behind the status bar's button, unfolding on errors), `pickers.py` (`TargetPicker`: 2×4 format grid + variants, used by both windows),
   `create_dialog.py` (New disk, `DiskChooser`), `write_dialog.py` (Write to disk), `queue.py` (`Item` incl. `member`, `QueueModel`, `StatusDelegate`),
   `dialogs.py`; `theme.py`, `icons.py`, `widgets.py`, `worker.py` are the suite's shared design system
   (EZP2019Linux).
