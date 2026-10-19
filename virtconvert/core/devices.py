@@ -28,6 +28,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -361,8 +362,7 @@ def inspect_device(path: str | os.PathLike, partitions: tuple[int, ...] = ()) ->
             if parent and number:
                 disk, partitions = disk_info(f"/dev/{parent}"), (number,)
         if partitions:
-            if not disk.table:
-                disk.table = _table_kind(disk)       # lsblk without udev doesn't know it
+            _fill_from_table(disk)      # lsblk without udev doesn't know the kind of table or the types
             layout = plan_partition_copy(disk, partitions)
     except ConvertError as exc:
         info = ImageInfo(path=Path(path), format=F.RAW, device=True)
@@ -435,19 +435,27 @@ class PartitionCopy:
         return sum(p.part.size for p in self.placements)
 
 
-def _table_kind(disk: PhysicalDisk) -> str:
-    """'gpt' or 'dos' from the disk's first sectors, when it can be read without a password."""
-    if not disk.partitions or not os.access(disk.path, os.R_OK):
-        return ""
+def _fill_from_table(disk: PhysicalDisk) -> None:
+    """What lsblk didn't say (without udev: the kind of table, the partitions' types), from the disk's
+    own table, when it can be read without a password."""
+    if not disk.partitions or (disk.table and all(p.parttype for p in disk.partitions)):
+        return
+    if not os.access(disk.path, os.R_OK):
+        return
     try:
         fd = os.open(disk.path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
         try:
-            scheme, _ = read_entries(lambda offset, n: os.pread(fd, n, offset), disk.logical_sector)
+            scheme, entries = read_entries(lambda offset, n: os.pread(fd, n, offset), disk.logical_sector)
         finally:
             os.close(fd)
     except OSError:
-        return ""
-    return {"gpt": "gpt", "mbr": "dos"}.get(scheme, "")
+        return
+    disk.table = disk.table or {"gpt": "gpt", "mbr": "dos"}.get(scheme, "")
+    for p in disk.partitions:
+        e = entries.get(p.number)
+        if e is not None and not p.parttype:      # (then PARTFLAGS is missing as well)
+            p.parttype = str(uuid.UUID(bytes_le=e.gpt_entry[:16])) if e.gpt_entry else f"0x{e.mbr_type:x}"
+            p.bootable = p.bootable or e.active
 
 
 def plan_partition_copy(disk: PhysicalDisk, numbers: tuple[int, ...]) -> PartitionCopy:
@@ -479,7 +487,17 @@ def plan_partition_copy(disk: PhysicalDisk, numbers: tuple[int, ...]) -> Partiti
     for part in sorted(chosen, key=lambda p: p.start):
         placements.append(Placement(part, part.start, at))
         at = round_up(at + part.size, MIB)
-    return PartitionCopy(disk, scheme, placements, at + (0 if scheme == "mbr" else MIB))
+    layout = PartitionCopy(disk, scheme, placements, at + (0 if scheme == "mbr" else MIB))
+    if scheme == "mbr":
+        _mbr_fits(layout)
+    return layout
+
+
+def _mbr_fits(layout: PartitionCopy) -> None:
+    # an MBR counts sectors in 32 bits: 2 TiB with the copy's 512-byte sectors
+    if layout.size // 512 > 0xFFFFFFFF:
+        raise ConvertError(f"An MBR disk can't be larger than 2 TB, and these partitions need "
+                           f"{human_bytes(layout.size)}: copy the whole disk instead.")
 
 
 def partition_stem(disk: PhysicalDisk, numbers: tuple[int, ...]) -> str:
@@ -506,8 +524,8 @@ def info_from_layout(disk_info_: ImageInfo, layout: PartitionCopy) -> ImageInfo:
     info.subformat = f"{count} partition{'s' if count > 1 else ''} of a physical disk" + (f", {disk.bus}" if disk.bus else "")
     table = PartitionTable(layout.scheme or "gpt")
     for n, p in enumerate(layout.placements, 1):
-        table.partitions.append(Partition(n, p.target, p.part.size, p.part.kind or "Other", p.part.label,
-                                          bootable=p.part.bootable))
+        # (not "bootable": the new MBR keeps the active flag but has no boot code, so it doesn't start)
+        table.partitions.append(Partition(n, p.target, p.part.size, p.part.kind or "Other", p.part.label))
     info.partitions = table
     info.mountpoints = list(dict.fromkeys(m for p in layout.placements for m in p.part.mountpoints))
     info.notes = [n for n in info.notes if "copy the whole disk instead" not in n]
@@ -517,7 +535,8 @@ def info_from_layout(disk_info_: ImageInfo, layout: PartitionCopy) -> ImageInfo:
                       f"{ {'gpt': 'GPT', 'mbr': 'MBR'}.get(layout.scheme, '') or 'partition table like the disk’s'}"
                       f"{' partition table' if layout.scheme else ''}.")
     if disk.logical_sector != 512:
-        info.notes.append("The disk uses 4 KB sectors and the copy 512-byte ones; most file systems don't mind.")
+        info.notes.append("The disk uses 4 KB sectors and the copy 512-byte ones. Linux file systems don't mind, "
+                          "but Windows may not open an NTFS or FAT partition made on the 4 KB disk.")
     info.logical_sector = 512
     return info
 
@@ -540,13 +559,21 @@ class PartitionReader:
                                "Choose the partitions again.")
         if scheme == "mbr" and len(layout.placements) > 4:
             raise ConvertError("An MBR disk holds four partitions: choose at most four, or copy the whole disk.")
+        if scheme == "mbr":
+            _mbr_fits(layout)
         self.extents: list[tuple[int, int, int]] = []     # (in the copy, size, on the disk)
         gpt_entries, mbr_entries = [], []
         for p in layout.placements:
             e = entries.get(p.part.number)
+            if e is not None and e.mbr_type in EXTENDED_TYPES:
+                raise ConvertError(f"{p.part.name} is an extended partition, a container for the logical ones: "
+                                   "choose those instead.")
             if e is None or e.start != p.source or e.size != p.part.size:
                 raise ConvertError(f"{p.part.name} isn't where it was when the disk was chosen: was the disk "
                                    "partitioned meanwhile? Choose the partitions again.")
+            if p.source + p.part.size > base.device_size:
+                raise ConvertError(f"{p.part.name} reaches past the end of {disk.title}: is it the disk that was "
+                                   "chosen?")
             self.extents.append((p.target, p.part.size, p.source))
             if scheme == "gpt":
                 entry = bytearray(e.gpt_entry)

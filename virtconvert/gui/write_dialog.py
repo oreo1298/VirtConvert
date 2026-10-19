@@ -43,12 +43,13 @@ class WriteDiskDialog(QDialog):
     def __init__(self, parent: QWidget, qemu: QemuImg | None, settings: QSettings, source: Path | None = None,
                  info: ImageInfo | None = None, member: str | None = None,
                  parents: dict[Path, Path] | None = None, force_parent: bool = False,
-                 image_filter: str = "All files (*)"):
+                 image_filter: str = "All files (*)", partitions: tuple[int, ...] = ()):
         super().__init__(parent)
         self.qemu = qemu
         self.settings = settings
         self.source, self.info, self.member = source, info, member
         self.parents, self.force_parent = dict(parents or {}), force_parent
+        self.partitions = partitions        # some partitions of a physical disk SOURCE
         self.image_filter = image_filter
         self.job: DiskWrite | None = None
         self.plan: WritePlan | None = None
@@ -165,6 +166,7 @@ class WriteDiskDialog(QDialog):
                     QCoreApplication.processEvents(QEventLoop.AllEvents, 50)
                     time.sleep(0.01)
             self.source, self.member, self.parents, self.force_parent = Path(path), member, {}, False
+            self.partitions = ()
             self.info = future.result()
         finally:
             self.setEnabled(True)
@@ -180,7 +182,7 @@ class WriteDiskDialog(QDialog):
     def job_for(self, disk: devices.PhysicalDisk) -> DiskWrite:
         return DiskWrite(source=self.source, disk=Path(disk.path), verify=self.verify_chk.isChecked(),
                          member=self.member, parents=dict(self.parents), force_parent=self.force_parent,
-                         elevate="pkexec", expect=disk_identity(disk))
+                         elevate="pkexec", expect=disk_identity(disk), partitions=self.partitions)
 
     def _replan(self, fresh: bool = False) -> None:
         """FRESH: ask lsblk about the chosen disk again (before erasing it), instead of the list's

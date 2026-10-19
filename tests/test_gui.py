@@ -628,11 +628,15 @@ def test_copy_some_partitions(window, qemu, tmp_path, fake_disk, monkeypatch):
         assert [c.text() for c, _p in chooser._checks] == ["sdz1 · 1 MB · vfat", "sdz2 · 18 MB · ext4",
                                                            "sdz3 · 5 MB · ext4 “Small”"]
         assert not chooser.parts_box.isVisibleTo(dialog)            # the whole disk, at first
+        assert "sdz3 5 MB ext4 “Small”" in chooser.desc.text()      # ... its partitions listed
         chooser.scope_seg.set_value("parts")
         chooser._scope_changed()
+        assert "sdz3 5 MB" not in chooser.desc.text()               # (now they are the ticks)
         dialog._replan()
         assert not dialog.create_btn.isEnabled() and "Tick the partitions" in dialog.banner.text()
         chooser._checks[2][0].setChecked(True)
+        chooser.refresh()                                           # Refresh keeps the ticks
+        assert chooser.selection() == (3,)
         dialog._replan()
         assert Path(dialog.out_edit.text()).name == "Small.vdi"       # named after its label
         assert dialog.create_btn.isEnabled() and "a copy of Test Stick (sdz) › sdz3" in dialog.banner.text()

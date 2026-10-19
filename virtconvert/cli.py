@@ -107,6 +107,8 @@ def _info_json(info: ImageInfo) -> dict:
         "backing_file": info.backing_file, "dirty": info.dirty,
         "partitions": None, "errors": info.errors, "warnings": info.warnings, "notes": info.notes,
     }
+    if info.layout is not None:          # a copy of some partitions of the disk "path"
+        data["copied_partitions"] = [p.part.name for p in info.layout.placements]
     if info.partitions is not None:
         data["partitions"] = {"scheme": info.partitions.scheme, "firmware": info.partitions.firmware,
                               "entries": [asdict(p) for p in info.partitions.partitions]}
@@ -126,7 +128,8 @@ def cmd_info(args) -> int:
     for n, info in enumerate(infos):
         if n:
             print()
-        print(f"{info.path} › {info.member}" if info.member else info.path)
+        print(f"{info.path} › {info.member}" if info.member else
+              f"{info.path} › {info.layout.names}" if info.layout is not None else info.path)
         if info.format is not None and info.virtual_size:
             width = 12
             for key, value in info.describe():
@@ -262,7 +265,7 @@ def _copy_disk(args, qemu: QemuImg, source: Path, target, output: Path) -> int:
     if not devices.is_device(source):
         raise SystemExit(f"{source} is not a disk. 'virtconvert disks' lists them; to convert an image "
                          "file use 'virtconvert convert'.")
-    partitions = tuple(_partition_number(p) for p in args.partition)
+    partitions = _partition_numbers(source, args.partition)
     info = inspect_image(source, qemu, partitions=partitions)
     job = Job(source=source, target=target, output=output, verify=not args.no_verify,
               overwrite=args.overwrite, partitions=partitions)
@@ -292,13 +295,29 @@ def _copy_disk(args, qemu: QemuImg, source: Path, target, output: Path) -> int:
     return 0
 
 
-def _partition_number(text: str) -> int:
-    """'3', 'sdb3', '/dev/nvme0n1p3' -> 3."""
-    import re
-    found = re.search(r"(\d+)$", text.strip())
-    if not found:
-        raise SystemExit(f"--partition takes a number (3) or a partition's name (sdb3), not '{text}'.")
-    return int(found.group(1))
+def _partition_numbers(source: Path, given: list[str]) -> tuple[int, ...]:
+    """--partition 3, sdb3 or /dev/sdb3 -> (3,): a name must be one of SOURCE's partitions."""
+    if not given:
+        return ()
+    try:
+        disk = devices.disk_info(source)
+    except ConvertError as exc:
+        raise SystemExit(str(exc)) from None
+    if disk.kind == "part":
+        raise SystemExit(f"{source} is a partition: give its disk with --from and the partition with --partition, "
+                         f"or just --from {source}.")
+    names = {p.name: p.number for p in disk.partitions if p.number}
+    numbers = []
+    for text in given:
+        text = text.strip()
+        if text.isdigit():
+            numbers.append(int(text))
+        elif os.path.basename(text) in names:
+            numbers.append(names[os.path.basename(text)])
+        else:
+            listed = f" (it has {', '.join(names)})" if names else ""
+            raise SystemExit(f"{text} is not a partition of {source}{listed}. Give its number (3) or its name.")
+    return tuple(numbers)
 
 
 def cmd_disks(args) -> int:

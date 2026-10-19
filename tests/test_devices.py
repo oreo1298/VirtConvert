@@ -449,8 +449,8 @@ def test_copy_partitions_from_the_command_line(qemu, fake_disk, tmp_path, capsys
     assert probe(tmp_path / "q.vdi").virtual_size == MIB + MIB + 18 * MIB + MIB
     assert cli.main(["create", str(tmp_path / "r.vdi"), "--from", disk.path, "--partition", "9"]) == 1
     assert "sdz has no partition 9" in capsys.readouterr().out
-    with pytest.raises(SystemExit, match="--partition takes a number"):
-        cli.main(["create", str(tmp_path / "r.vdi"), "--from", disk.path, "--partition", "x"])
+    with pytest.raises(SystemExit, match=r"sdb3 is not a partition of .*sdz.disk \(it has sdz1, sdz2, sdz3\)"):
+        cli.main(["create", str(tmp_path / "r.vdi"), "--from", disk.path, "--partition", "sdb3"])
 
 
 def test_copy_a_partition_of_a_loop_device(qemu, tmp_path, monkeypatch):
@@ -484,3 +484,70 @@ def test_copy_a_partition_of_a_loop_device(qemu, tmp_path, monkeypatch):
         if shutil.which("partx"):
             _run(["partx", "-d", device], root)
         _run(["losetup", "-d", device], root)
+
+
+def test_review_findings_for_partition_copies(qemu, fake_disk, tmp_path):
+    import dataclasses
+    import struct
+
+    from virtconvert.core.partitions import read_entries
+    from virtconvert.core.writedisk import DiskWrite, make_write_plan, write_to_disk
+
+    # Write to disk keeps the partition choice: only sdz3 lands on the target
+    disk = fake_disk(32 * MIB, table="gpt", seq=4)
+    data = gpt_disk_file(Path(disk.path), 32 * MIB, GPT_PARTS)
+    disk.partitions = parts_of("sdz", GPT_PARTS)
+    target = fake_disk(16 * MIB, name="sdy")
+    plan = make_write_plan(DiskWrite(Path(disk.path), Path(target.path), partitions=(3,)), qemu)
+    assert plan.ok and plan.size == 7 * MIB and plan.info.layout.names == "sdz3", plan.errors
+    write_to_disk(plan, qemu)
+    written = Path(target.path).read_bytes()
+    assert written[MIB:6 * MIB] == data[40960 * SECTOR:51200 * SECTOR]
+
+    # another disk under the same name once it is open (its diskseq changed)
+    plan = make_plan(Job(source=Path(disk.path), target=parse_target("vdi"), output=tmp_path / "s.vdi",
+                         partitions=(3,)), qemu)
+    fake_disk.disks[disk.path] = dataclasses.replace(disk, seq=5)
+    with pytest.raises(ConvertError, match="is not the disk that was chosen any more"):
+        execute(plan, qemu)
+    fake_disk.disks[disk.path] = disk
+
+    # an MBR can't count past 2 TiB
+    big = fake_disk(MIB, name="sdx", table="dos")
+    big.size = 5 << 40
+    big.partitions = [devices.DiskPart("sdx1", "", 3 << 40, parttype="0x7", start=MIB, number=1)]
+    with pytest.raises(ConvertError, match="An MBR disk can't be larger than 2 TB"):
+        devices.plan_partition_copy(big, (1,))
+
+    # a stale "EFI PART" on an MBR disk is not a GPT; a GPT with a damaged header gives nothing
+    head = bytearray(64 * 1024)
+    struct.pack_into("<B3sB3sII", head, 446, 0, b"\0\0\0", 0x83, b"\0\0\0", 2048, 4096)
+    head[510:512] = b"\x55\xaa"
+    head[512:520] = b"EFI PART"
+    scheme, entries = read_entries(lambda o, n: bytes(head[o:o + n]), SECTOR)
+    assert scheme == "mbr" and list(entries) == [1]
+    gpt = bytearray(data[:64 * 1024])
+    gpt[512 + 24] ^= 1
+    assert read_entries(lambda o, n: bytes(gpt[o:o + n]), SECTOR) == ("gpt", {})
+
+
+def test_types_from_the_disk_without_udev(qemu, fake_disk, tmp_path):
+    """lsblk without udev has no PARTTYPE: the disk's own table fills it in (when readable), so an
+    extended partition is told apart, and a copied MBR partition gets no BIOS boot advice."""
+    import struct
+    disk = fake_disk(16 * MIB, table="")
+    data = bytearray(16 * MIB)
+    struct.pack_into("<B3sB3sII", data, 446, 0x80, b"\0\0\0", 0x83, b"\0\0\0", 2048, 4096)
+    struct.pack_into("<B3sB3sII", data, 462, 0, b"\0\0\0", 0x05, b"\0\0\0", 8192, 8192)
+    data[510:512] = b"\x55\xaa"
+    Path(disk.path).write_bytes(bytes(data))
+    disk.partitions = [devices.DiskPart("sdz1", "", 4096 * SECTOR, start=2048 * SECTOR, number=1),
+                       devices.DiskPart("sdz2", "", 1024, start=8192 * SECTOR, number=2)]
+    info = devices.inspect_device(disk.path, (2,))
+    assert disk.table == "dos" and disk.partitions[1].parttype == "0x5" and disk.partitions[1].extended
+    assert "sdz2 is an extended partition" in info.errors[0]
+    plan = make_plan(Job(source=Path(disk.path), target=parse_target("vhdx"), output=tmp_path / "b.vhdx",
+                         partitions=(1,)), qemu)
+    assert plan.ok and plan.info.partitions.firmware == "", plan.errors
+    assert not any("BIOS" in n and "generation" in n for n in plan.notes)
+    assert any("grub-install" in n for n in plan.notes)          # it was the active partition

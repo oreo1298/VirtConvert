@@ -63,6 +63,7 @@ class DiskChooser(QWidget):
         self.for_writing = for_writing
         self.with_partitions = partitions
         self._checks: list[tuple[QCheckBox, devices.DiskPart]] = []
+        self._checks_of: str | None = None      # the disk the ticks are for
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
@@ -144,29 +145,36 @@ class DiskChooser(QWidget):
 
     def _selected(self) -> None:
         disk = self.disk()
-        if disk is None:
-            self.desc.setText("")
-        else:
-            parts = []
-            for p in disk.partitions:
-                what = " ".join(x for x in (p.fstype, f"“{p.label}”" if p.label else "") if x)
-                parts.append(f"{p.name} {human_bytes(p.size)}" + (f" {what}" if what else ""))
-            listed = parts and not self.with_partitions      # (else they are the ticks below)
-            self.desc.setText(f"{disk.path} · {disk.summary}" + (f"\n{', '.join(parts)}" if listed else ""))
         if self.with_partitions:
             self._fill_partitions(disk)
+        self._describe(disk)
         self.changed.emit()
 
+    def _describe(self, disk: devices.PhysicalDisk | None) -> None:
+        if disk is None:
+            self.desc.setText("")
+            return
+        parts = []
+        for p in disk.partitions:
+            what = " ".join(x for x in (p.fstype, f"“{p.label}”" if p.label else "") if x)
+            parts.append(f"{p.name} {human_bytes(p.size)}" + (f" {what}" if what else ""))
+        listed = parts and not self.partitions_wanted        # (else they are the ticks below)
+        self.desc.setText(f"{disk.path} · {disk.summary}" + (f"\n{', '.join(parts)}" if listed else ""))
+
     def _fill_partitions(self, disk: devices.PhysicalDisk | None) -> None:
+        # after Refresh, the same disk keeps its ticks
+        keep = {p.number for c, p in self._checks if c.isChecked()} if disk and disk.path == self._checks_of else set()
         for check, _p in self._checks:
             check.deleteLater()
         self._checks = []
+        self._checks_of = disk.path if disk else None
         choosable = [p for p in (disk.partitions if disk else []) if not p.extended]
         for p in choosable:
             check = QCheckBox(p.summary)
             if not p.number or p.start < 0:
                 check.setEnabled(False)
                 check.setToolTip("Where this partition is on the disk isn't known: copy the whole disk")
+            check.setChecked(p.number in keep and check.isEnabled())
             check.toggled.connect(lambda _c: self.changed.emit())
             self.parts_lay.addWidget(check)
             self._checks.append((check, p))
@@ -180,6 +188,7 @@ class DiskChooser(QWidget):
     def _scope_changed(self, emit: bool = True) -> None:
         self.parts_box.setVisible(self.partitions_wanted)
         if emit:
+            self._describe(self.disk())
             self.changed.emit()
 
 
@@ -491,8 +500,10 @@ class CreateDiskDialog(QDialog):
 
     def _fit(self) -> None:
         """As tall as the rows need (they come and go with the choices), at least 600 wide."""
-        hint = self.sizeHint()
-        self.resize(max(600, hint.width()), hint.height())
+        self.layout().activate()
+        width = max(600, self.sizeHint().width())
+        height = self.heightForWidth(width)
+        self.resize(width, height if height > 0 else self.sizeHint().height())
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)

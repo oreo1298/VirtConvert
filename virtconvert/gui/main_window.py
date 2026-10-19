@@ -1482,7 +1482,7 @@ class MainWindow(QMainWindow):
         dialog = WriteDiskDialog(self, self.qemu, self.settings, item.source if usable else None,
                                  item.info if usable else None, item.member if usable else None,
                                  item.parents if usable else None, item.force_parent if usable else False,
-                                 image_filter=IMAGE_FILTER)
+                                 image_filter=IMAGE_FILTER, partitions=item.partitions if usable else ())
         try:
             job = dialog.job if dialog.exec() else None
         finally:

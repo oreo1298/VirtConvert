@@ -384,9 +384,10 @@ def _device_checks(plan: Plan) -> None:
         plan.notes.append("Reading a disk needs administrator rights: you'll be asked for your password.")
     plan.notes.append("The disk is only read, never written to.")
     if info.layout is not None and _starts_a_system(info):
-        plan.notes.append("A system on the copied partitions moves with them: to start it in a virtual machine, "
-                          "include its EFI system partition; Windows also needs its boot files rebuilt there "
-                          "(bcdboot). For a copy that starts as it is, copy the whole disk.")
+        plan.notes.append("A system on the copied partitions moves with them, and the boot code at the start of the "
+                          "disk isn't copied: to start it in a virtual machine, include its EFI system partition "
+                          "(UEFI), or reinstall its boot loader there (BIOS: grub-install; Windows: bcdboot). For a "
+                          "copy that starts as it is, copy the whole disk.")
     if guess_os(info) == "windows":
         plan.notes.append("Windows: shut it down completely before copying (Fast Startup leaves the disk "
                           "half-saved: hold Shift while clicking Shut down), and keep the BitLocker recovery key "
@@ -395,7 +396,7 @@ def _device_checks(plan: Plan) -> None:
 
 def _starts_a_system(info: ImageInfo) -> bool:
     """Whether the partitions look like what a computer starts from (not just a data partition)."""
-    parts = info.partitions.partitions if info.partitions else []
+    parts = [p.part for p in info.layout.placements] if info.layout is not None else []
     return any(p.kind in ("EFI system", "BIOS boot", "Microsoft reserved", "Windows recovery")
                or p.kind.startswith("Linux root") or p.bootable for p in parts)
 
@@ -529,6 +530,10 @@ def open_source(info: ImageInfo, size: int, through_reader: bool, elevate: str =
             if info.layout is not None:
                 # some partitions: a new partition table, and their bytes where they are on the disk
                 try:
+                    planned = info.layout.disk
+                    if planned.seq and devices.disk_info(info.path).seq != planned.seq:
+                        raise ConvertError(f"{info.path} is not the disk that was chosen any more (was it "
+                                           "unplugged, and another one plugged in?). Choose it again.")
                     reader = devices.PartitionReader(disk, info.layout, size)
                 except BaseException:
                     disk.close()

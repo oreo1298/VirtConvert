@@ -284,7 +284,17 @@ def read_entries(read: Callable[[int, int], bytes], sector: int) -> tuple[str, d
     are found through the extended partition's chain of EBRs."""
     head = read(0, 2 * sector)
     found: dict[int, TableEntry] = {}
-    if head[sector:sector + 8] == b"EFI PART":
+    # like Linux: a GPT needs an MBR with an EE entry (protective or hybrid) and a valid header;
+    # otherwise an "EFI PART" left behind by a tool that made the disk MBR is ignored
+    signed = head[510:512] == b"\x55\xaa"
+    has_ee = signed and any(head[446 + 16 * i + 4] == 0xEE for i in range(4))
+    if head[sector:sector + 8] == b"EFI PART" and has_ee:
+        header_size, = struct.unpack_from("<I", head, sector + 12)
+        header = bytearray(head[sector:sector + min(max(header_size, 92), sector)])
+        stored, = struct.unpack_from("<I", header, 16)
+        header[16:20] = bytes(4)
+        if zlib.crc32(bytes(header)) != stored:
+            return "gpt", found          # a damaged primary header: nothing to rely on
         entries_lba, count, entry_size = struct.unpack_from("<QII", head, sector + 72)
         if entry_size < 128 or not 0 < count <= 1024:
             return "gpt", found
@@ -296,7 +306,7 @@ def read_entries(read: Callable[[int, int], bytes], sector: int) -> tuple[str, d
             first, last = struct.unpack_from("<QQ", raw, 32)
             found[i + 1] = TableEntry(i + 1, first * sector, (last - first + 1) * sector, gpt_entry=bytes(raw))
         return "gpt", found
-    if head[510:512] != b"\x55\xaa":
+    if not signed:
         return "none", found
     extended = None
     for i in range(4):

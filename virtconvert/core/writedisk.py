@@ -56,6 +56,7 @@ class DiskWrite:
     candidates: list[Path] = field(default_factory=list)
     elevate: str = "auto"                  # how to open the disks: pkexec, sudo, auto (devices.elevator)
     expect: tuple | None = None            # disk_identity() of the disk the person chose
+    partitions: tuple[int, ...] = ()       # only these partitions of the physical disk SOURCE
 
 
 @dataclass
@@ -134,7 +135,8 @@ def make_write_plan(job: DiskWrite, qemu: QemuImg | None, info: ImageInfo | None
                     disk: devices.PhysicalDisk | None = None) -> WritePlan:
     """Check everything that can be checked before erasing the disk."""
     if info is None:
-        info = inspect_image(job.source, qemu, job.parents, job.force_parent, job.candidates, job.member)
+        info = inspect_image(job.source, qemu, job.parents, job.force_parent, job.candidates, job.member,
+                             job.partitions)
     plan = WritePlan(job=job, info=info)
     plan.errors.extend(info.errors)
     plan.warnings.extend(info.warnings)
