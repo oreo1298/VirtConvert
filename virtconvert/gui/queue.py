@@ -34,6 +34,7 @@ class Item:
     source: Path
     target: Target
     member: str | None = None    # a disk inside the OVA SOURCE
+    partitions: tuple[int, ...] = ()     # only these partitions of the physical disk SOURCE
     output: Path | None = None
     info: ImageInfo | None = None
     plan: Plan | None = None
@@ -56,8 +57,8 @@ class Item:
         return f"{self.source.name} › {self.member}" if self.member else self.source.name
 
     @property
-    def key(self) -> tuple[Path, str | None]:
-        return self.source, self.member
+    def key(self) -> tuple[Path, str | None, tuple[int, ...]]:
+        return self.source, self.member, self.partitions
 
     @property
     def from_label(self) -> str:

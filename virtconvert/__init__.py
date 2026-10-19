@@ -1,6 +1,6 @@
 """VirtConvert&Create: convert virtual disks between VirtualBox, Hyper-V, VMware and QEMU, and create new ones."""
 
-__version__ = "1.2.1"
+__version__ = "1.3.0"
 APP_NAME = "VirtConvert&Create"
 APP_ID = "virtconvert"
 DESKTOP_ID = "io.github.oreo1298.VirtConvert"

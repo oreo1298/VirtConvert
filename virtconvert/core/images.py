@@ -47,15 +47,17 @@ def expand_sources(path: str | Path) -> list[tuple[Path, str | None]]:
 
 def inspect_image(path: str | Path, qemu: QemuImg | None = None,
                   parents: dict[Path, Path] | None = None, force: bool = False,
-                  candidates: list[Path] | None = None, member: str | None = None) -> ImageInfo:
+                  candidates: list[Path] | None = None, member: str | None = None,
+                  partitions: tuple[int, ...] = ()) -> ImageInfo:
     """Probe PATH, find the parents of a differencing image and read its partition table.
 
     PARENTS maps images to parents chosen by hand; FORCE accepts a parent whose
     ID doesn't match; CANDIDATES are extra files to look at when searching for
-    parents. Never raises for a bad image: see info.errors.
+    parents; PARTITIONS picks partitions of a physical disk. Never raises for a
+    bad image: see info.errors.
     """
     if member is None and devices.is_device(path):
-        return devices.inspect_device(path)      # a physical disk: lsblk, nothing is read
+        return devices.inspect_device(path, partitions)      # a physical disk: lsblk, nothing is read
     info = probe(path, member)
     if info.format is None or info.format.container:
         return info

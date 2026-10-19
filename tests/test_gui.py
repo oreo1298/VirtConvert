@@ -604,3 +604,70 @@ def test_options_menu(window, images, monkeypatch):
     assert window.model.items[0].output.parent == images
     window.act_overwrite.setChecked(True)
     assert window.model.items[0].plan.job.overwrite
+
+
+def test_copy_some_partitions(window, qemu, tmp_path, fake_disk, monkeypatch):
+    from test_devices import GPT_PARTS, gpt_disk_file, parts_of
+
+    from virtconvert.gui import create_dialog
+
+    disk = fake_disk(32 * MIB, table="gpt")
+    data = gpt_disk_file(Path(disk.path), 32 * MIB, GPT_PARTS)
+    disk.partitions = parts_of("sdz", GPT_PARTS, ("vfat", "ext4", "ext4"))
+    disk.partitions[2].label = "Small"
+
+    def read_back(path, driver):
+        out = tmp_path / "back.raw"
+        qemu.check_run(["convert", "-f", driver, "-O", "raw", str(path), str(out)], "test")
+        return out.read_bytes()
+
+    def fill_in(dialog):
+        dialog.source_seg.set_value("physical")
+        dialog._source_changed()
+        chooser = dialog.chooser
+        assert [c.text() for c, _p in chooser._checks] == ["sdz1 · 1 MB · vfat", "sdz2 · 18 MB · ext4",
+                                                           "sdz3 · 5 MB · ext4 “Small”"]
+        assert not chooser.parts_box.isVisibleTo(dialog)            # the whole disk, at first
+        chooser.scope_seg.set_value("parts")
+        chooser._scope_changed()
+        dialog._replan()
+        assert not dialog.create_btn.isEnabled() and "Tick the partitions" in dialog.banner.text()
+        chooser._checks[2][0].setChecked(True)
+        dialog._replan()
+        assert Path(dialog.out_edit.text()).name == "Small.vdi"       # named after its label
+        assert dialog.create_btn.isEnabled() and "a copy of Test Stick (sdz) › sdz3" in dialog.banner.text()
+        dialog.out_edit.setText(str(tmp_path / "small.vdi"))
+        dialog._name_typed("")
+        dialog._create()
+        return dialog.result()
+
+    monkeypatch.setattr(create_dialog.CreateDiskDialog, "exec", fill_in)
+    window.new_disk()
+    wait_for(lambda: not window.runner.busy)
+    copy = read_back(tmp_path / "small.vdi", "vdi")
+    assert len(copy) == 7 * MIB and copy[MIB:6 * MIB] == data[40960 * SECTOR:51200 * SECTOR]
+
+    # Add physical disk… with two partitions: an item of its own in the list
+    def pick(dialog):
+        dialog.chooser.scope_seg.set_value("parts")
+        dialog.chooser._scope_changed()
+        assert not dialog.add_btn.isEnabled()
+        for n in (0, 2):
+            dialog.chooser._checks[n][0].setChecked(True)
+        assert dialog.add_btn.isEnabled()
+        return 1
+
+    monkeypatch.setattr(create_dialog.DiskPickerDialog, "exec", pick)
+    window.add_physical_disk()
+    wait_for(lambda: window.model.items and window.model.items[0].state != mw.INSPECTING)
+    item = window.model.items[0]
+    assert item.partitions == (1, 3) and item.name == "Test Stick (sdz) › sdz1, sdz3", item.message
+    assert item.state == mw.READY and item.plan.size == 8 * MIB
+    window.table.selectRow(0)
+    pump()
+    window.out_edit.setText(str(tmp_path / "two.vdi"))
+    window.convert_all()
+    wait_for(lambda: item.state in (mw.DONE, mw.FAILED) and not window.runner.busy)
+    assert item.state == mw.DONE, item.message
+    copy = read_back(item.output, "vdi")
+    assert copy[MIB:2 * MIB] == data[2048 * SECTOR:4096 * SECTOR] and copy[2 * MIB:7 * MIB] == data[40960 * SECTOR:51200 * SECTOR]

@@ -25,8 +25,9 @@ the other formats; see [Updating from VirtConvert 1.0](#updating-from-virtconver
   ext4, Btrfs or XFS, ready to attach to a virtual machine as an extra drive. Only the file
   system's own structures are written, so even a 2 TB disk is made in a second or two.
 - **Physical disks into virtual ones**: copy one of the computer's disks, or a USB stick or memory
-  card, into any of those formats, to run it in a virtual machine or keep it as an image. The
-  disk is only read; you're asked for your password to read it, and nothing else runs as root.
+  card, into any of those formats, to run it in a virtual machine or keep it as an image; or copy
+  just some of its partitions, which reads only them. The disk is only read; you're asked for your
+  password to read it, and nothing else runs as root.
 - **Virtual disks onto physical ones**: write any image (every format above, ISO files, the disk in
   an OVA, checkpoints merged with their parents) onto a USB stick, a memory card, an SSD or a hard
   disk, so a computer starts from it. You confirm before the disk is erased, the disk is read back
@@ -198,7 +199,7 @@ virtconvert doctor
 ```
 
 ```
-VirtConvert&Create 1.2.1 on Ubuntu 24.04.5 LTS
+VirtConvert&Create 1.3.0 on Ubuntu 24.04.5 LTS
   ✓ Python             3.12.3
   ✓ qemu-img           8.2.2 (/usr/bin/qemu-img)
   ✓ PySide6 (the app)  6.11.2
@@ -334,6 +335,15 @@ an image of a USB stick or memory card.
 - On the command line: `virtconvert disks` lists the disks, then
   `virtconvert create old-pc.vdi --from /dev/sdb` (or `virtconvert convert /dev/sdb -t vhdx`).
 
+**Only some partitions**: choose **Some partitions** under the disk and tick the ones you want
+(`--partition 2` on the command line, repeated for several, or `--from /dev/sdb2`). Only those are
+read, so a 30 GB partition of a 1 TB disk takes as long as 30 GB, and the copy is a disk just
+their size: the same kind of partition table (GPT or MBR), with the partitions from 1 MB on, each
+keeping its type, name and ID. Attach it to a virtual machine as an extra drive. The copy may be
+saved on another partition of the same disk. A system's partitions move in the copy, so to start
+one from it, include its EFI system partition; Windows also needs its boot files rebuilt there
+(`bcdboot`). Copy the whole disk to get one that starts as it is.
+
 Reading a disk needs administrator rights, so you are asked for your password (a password dialog
 in the app, `sudo` in a terminal). Only a few lines run as root: they open the disk read-only and
 hand it over; the copying itself runs as you, can be cancelled, and the image belongs to you.
@@ -430,6 +440,7 @@ virtconvert create linux -t qcow2 -s 200G --fs ext4      # -> linux.qcow2
 
 virtconvert disks                                        # the physical disks
 virtconvert create old-pc.vdi --from /dev/sdb            # a copy of one (asks for your password)
+virtconvert create data.vdi --from /dev/sdb --partition 3  # only its third partition (or --from /dev/sdb3)
 virtconvert convert /dev/sdc -t vhdx                     # the same through convert
 virtconvert write vm.vhdx /dev/sdb                       # a virtual disk onto a physical one (erases it)
 virtconvert write ubuntu.iso /dev/sdc --yes              # an ISO onto a USB stick, without asking
@@ -448,7 +459,8 @@ checkpoint's parent is, if it isn't found) and `-y` (don't ask about warnings).
 Options for `create`: `-s/--size` (`64G`, `512M`, `2T`; a plain number is megabytes), `-t/--to`
 (else the file name's extension decides), `--fixed`, `--split`, `--table gpt|mbr|none`,
 `--fs ntfs|exfat|fat32|ext4|btrfs|xfs` (implies `--table gpt`), `-L/--label`, `--from DISK` (a copy
-of a physical disk instead), `--overwrite`, `--no-verify`.
+of a physical disk instead), `-p/--partition N` (with `--from`: only that partition; repeat it for
+several), `--overwrite`, `--no-verify`.
 
 Options for `write`: `--no-verify` (don't read the disk back), `--member NAME` (the disk of an OVA
 with several), `--parent FILE`, `-y/--yes` (don't ask before erasing the disk), `-q/--quiet`.

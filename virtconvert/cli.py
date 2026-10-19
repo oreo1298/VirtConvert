@@ -227,6 +227,8 @@ def cmd_create(args) -> int:
         if args.size or args.fs or args.table or args.label:
             raise SystemExit("--from copies a disk as it is: leave out --size, --fs, --table and --label.")
         return _copy_disk(args, qemu, Path(args.source), target, output)
+    if args.partition:
+        raise SystemExit("--partition picks partitions of the disk given with --from.")
     if not args.size:
         raise SystemExit("Give the size of the new disk with --size (e.g. -s 64G), or copy a disk with --from.")
     if args.label and not args.fs:
@@ -260,13 +262,20 @@ def _copy_disk(args, qemu: QemuImg, source: Path, target, output: Path) -> int:
     if not devices.is_device(source):
         raise SystemExit(f"{source} is not a disk. 'virtconvert disks' lists them; to convert an image "
                          "file use 'virtconvert convert'.")
-    info = inspect_image(source, qemu)
+    partitions = tuple(_partition_number(p) for p in args.partition)
+    info = inspect_image(source, qemu, partitions=partitions)
     job = Job(source=source, target=target, output=output, verify=not args.no_verify,
-              overwrite=args.overwrite)
+              overwrite=args.overwrite, partitions=partitions)
     plan = make_plan(job, qemu, info)
     print(f"New disk {job.output} from {info.name} ({source})")
-    print(f"  {human_bytes(plan.size)} {job.target.label}, a copy of {info.subformat.split(', ')[0]}"
-          f" {info.name}")
+    if not plan.size:
+        pass
+    elif info.layout is not None:
+        print(f"  {human_bytes(plan.size)} {job.target.label}, a copy of {info.layout.names} of "
+              f"{info.layout.disk.title}")
+    else:
+        print(f"  {human_bytes(plan.size)} {job.target.label}, a copy of {info.subformat.split(', ')[0]}"
+              f" {info.name}")
     _print_messages(plan.errors, plan.warnings, [] if args.quiet else plan.notes)
     if not plan.ok:
         return 1
@@ -281,6 +290,15 @@ def _copy_disk(args, qemu: QemuImg, source: Path, target, output: Path) -> int:
     check = ", verified identical to the disk" if outcome.verified else ""
     print(f"  ✓ {outcome.output.name}: {human_bytes(outcome.file_size)} file{check} ({mmss(outcome.seconds)})")
     return 0
+
+
+def _partition_number(text: str) -> int:
+    """'3', 'sdb3', '/dev/nvme0n1p3' -> 3."""
+    import re
+    found = re.search(r"(\d+)$", text.strip())
+    if not found:
+        raise SystemExit(f"--partition takes a number (3) or a partition's name (sdb3), not '{text}'.")
+    return int(found.group(1))
 
 
 def cmd_disks(args) -> int:
@@ -299,6 +317,7 @@ def cmd_disks(args) -> int:
             what = " ".join(x for x in (part.fstype, f"“{part.label}”" if part.label else "") if x)
             print(f"{'':<{width}}    {part.name}: {human_bytes(part.size)}{'  ' + what if what else ''}")
     print("\nCopy one into a virtual disk:  virtconvert create disk.vdi --from /dev/sdX")
+    print("Only one of its partitions:     virtconvert create data.vdi --from /dev/sdX --partition 2")
     print("Write a virtual disk onto one:  virtconvert write disk.vdi /dev/sdX   (erases it)")
     return 0
 
@@ -479,6 +498,7 @@ def build_parser() -> argparse.ArgumentParser:
                "  virtconvert create data.vhdx -s 1T --fs ntfs --label Data\n"
                "  virtconvert disks                    list the physical disks\n"
                "  virtconvert create pc.vdi --from /dev/sda   a copy of a physical disk\n"
+               "  virtconvert create data.vdi --from /dev/sda -p 3   only its third partition\n"
                "  virtconvert write vm.vhdx /dev/sdb   put a virtual disk onto a physical one\n",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"virtconvert {__version__}")
@@ -526,7 +546,10 @@ def build_parser() -> argparse.ArgumentParser:
                                    "'virtconvert disks'); you're asked for your password to read it.")
     p.add_argument("output", metavar="FILE", help="the new disk, e.g. data.vdi")
     p.add_argument("--from", dest="source", metavar="DISK",
-                   help="copy this physical disk, e.g. /dev/sdb (the whole disk, or one partition)")
+                   help="copy this physical disk, e.g. /dev/sdb (or one partition of it: /dev/sdb2)")
+    p.add_argument("-p", "--partition", action="append", default=[], metavar="N",
+                   help="with --from: copy only this partition (2, or sdb2), into a disk of its own size; "
+                        "repeat it for several")
     p.add_argument("-s", "--size", help="its size: 20G, 512M, 2T (binary units)")
     p.add_argument("-t", "--to", metavar="FORMAT", help="vdi, vmdk, vhd, vhdx, qcow2, qed, ova, raw, or a "
                                                          "shortcut like hyperv or azure (default: from FILE)")

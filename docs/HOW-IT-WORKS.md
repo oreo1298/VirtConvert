@@ -248,6 +248,32 @@ with the source), and when the disk is mounted it warns (more strongly for the s
 skips the comparison afterwards: a disk in use keeps changing, so it would fail for no fault of the
 copy.
 
+### Some partitions
+
+The copy can also be of some partitions only (`Job.partitions`; a partition's own path such as
+`/dev/sdb2` stands for its disk with that partition). `plan_partition_copy` places them in a new
+disk, one after the other from 1 MiB on, each starting on a whole MiB, in the original order; the
+new disk ends 1 MiB after the last one (the room a GPT backup needs). Where they are on the
+physical disk comes from `/sys/class/block/*/start` (always in 512-byte units) and their numbers
+from `.../partition`, so planning needs no password; the kind of table comes from lsblk, or from
+the disk's first sectors when lsblk has no udev data and the disk is readable, or else is settled
+once the disk is open.
+
+`PartitionReader` makes the new disk on the fly for the NBD server. Once the disk is open it reads
+the disk's own table with `partitions.read_entries` (GPT entries; MBR primaries, and the logical
+partitions through the extended partition's chain of EBRs, whose links are relative to the
+extended partition and whose partitions to their EBR), checks that every chosen partition is still
+where the plan put it, and builds the new table from those real entries: a GPT keeps each entry's
+type, unique GUID (so `PARTUUID=` references still match), attributes and name, with only its first
+and last LBA rewritten (`gpt_with_entries`, a new disk GUID); an MBR keeps each type and the active
+flag (`mbr_table`, a new signature). Reads of the new disk are served from the table, from the
+partitions' bytes where they are on the disk, and as zeros in between. Only the chosen partitions
+are ever read, and nothing is written.
+
+`_device_checks` is partition-aware for such a copy: only the chosen partitions' mountpoints count
+as in use, and the image may be saved on another partition of the same disk, never on one being
+copied (`partitions_holding`, which follows LVM and LUKS down to partitions instead of disks).
+
 ## 7. Writing onto a physical disk (`core/writedisk.py`)
 
 Any disk VirtConvert&Create reads can be written onto one of the computer's disks: every format, a

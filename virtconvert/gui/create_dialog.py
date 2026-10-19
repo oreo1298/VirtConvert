@@ -53,13 +53,16 @@ SOURCES = (
 class DiskChooser(QWidget):
     """The computer's physical disks in a list, with a refresh button and a description. For
     writing onto a disk (FOR_WRITING), the disk the system runs from is marked, and a removable
-    one is chosen first."""
+    one is chosen first. With PARTITIONS, the whole disk or some of its partitions can be chosen
+    (selection())."""
 
     changed = Signal()
 
-    def __init__(self, parent=None, for_writing: bool = False):
+    def __init__(self, parent=None, for_writing: bool = False, partitions: bool = False):
         super().__init__(parent)
         self.for_writing = for_writing
+        self.with_partitions = partitions
+        self._checks: list[tuple[QCheckBox, devices.DiskPart]] = []
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
@@ -79,6 +82,20 @@ class DiskChooser(QWidget):
         self.desc.setObjectName("Muted")
         self.desc.setWordWrap(True)
         lay.addWidget(self.desc)
+        if partitions:
+            self.scope_seg = SegmentedControl()
+            self.scope_seg.add("Whole disk", "whole", "Everything on the disk, its partition table included")
+            self.scope_seg.add("Some partitions", "parts", "Only the partitions you tick, in a new disk just their "
+                                                           "size (only they are read)")
+            self.scope_seg.set_value("whole")
+            self.scope_seg.changed.connect(lambda _v: self._scope_changed())
+            lay.addWidget(self.scope_seg)
+            self.parts_box = QWidget()
+            self.parts_lay = QVBoxLayout(self.parts_box)
+            self.parts_lay.setContentsMargins(4, 2, 0, 0)
+            self.parts_lay.setSpacing(4)
+            self.parts_box.hide()
+            lay.addWidget(self.parts_box)
         self.disks: list[devices.PhysicalDisk] = []
         self.error = ""
 
@@ -114,6 +131,17 @@ class DiskChooser(QWidget):
         disk = self.disk()
         return disk.path if disk else None
 
+    @property
+    def partitions_wanted(self) -> bool:
+        """Some partitions, rather than the whole disk (whether or not any is ticked yet)."""
+        return self.with_partitions and self.scope_seg.value() == "parts"
+
+    def selection(self) -> tuple[int, ...]:
+        """The ticked partitions' numbers; () for the whole disk."""
+        if not self.partitions_wanted:
+            return ()
+        return tuple(p.number for check, p in self._checks if check.isChecked())
+
     def _selected(self) -> None:
         disk = self.disk()
         if disk is None:
@@ -123,8 +151,36 @@ class DiskChooser(QWidget):
             for p in disk.partitions:
                 what = " ".join(x for x in (p.fstype, f"“{p.label}”" if p.label else "") if x)
                 parts.append(f"{p.name} {human_bytes(p.size)}" + (f" {what}" if what else ""))
-            self.desc.setText(f"{disk.path} · {disk.summary}" + (f"\n{', '.join(parts)}" if parts else ""))
+            listed = parts and not self.with_partitions      # (else they are the ticks below)
+            self.desc.setText(f"{disk.path} · {disk.summary}" + (f"\n{', '.join(parts)}" if listed else ""))
+        if self.with_partitions:
+            self._fill_partitions(disk)
         self.changed.emit()
+
+    def _fill_partitions(self, disk: devices.PhysicalDisk | None) -> None:
+        for check, _p in self._checks:
+            check.deleteLater()
+        self._checks = []
+        choosable = [p for p in (disk.partitions if disk else []) if not p.extended]
+        for p in choosable:
+            check = QCheckBox(p.summary)
+            if not p.number or p.start < 0:
+                check.setEnabled(False)
+                check.setToolTip("Where this partition is on the disk isn't known: copy the whole disk")
+            check.toggled.connect(lambda _c: self.changed.emit())
+            self.parts_lay.addWidget(check)
+            self._checks.append((check, p))
+        self.scope_seg.set_item_enabled("parts", bool(choosable),
+                                        "Only the partitions you tick, in a new disk just their size (only they are "
+                                        "read)" if choosable else "This disk has no partitions to choose from")
+        if not choosable:
+            self.scope_seg.set_value("whole")
+        self._scope_changed(emit=False)
+
+    def _scope_changed(self, emit: bool = True) -> None:
+        self.parts_box.setVisible(self.partitions_wanted)
+        if emit:
+            self.changed.emit()
 
 
 class CreateDiskDialog(QDialog):
@@ -140,7 +196,7 @@ class CreateDiskDialog(QDialog):
         self.plan: CreatePlan | Plan | None = None
         self._overwrite_ok: Path | None = None     # the file the save dialog said may be replaced
         self._auto_name = True                     # the name follows the source until it's edited
-        self._device_info: dict[str, ImageInfo] = {}
+        self._device_info: dict[tuple[str, tuple[int, ...]], ImageInfo] = {}
         self.setWindowTitle("New disk")
         self.setMinimumWidth(600)
         self._timer = QTimer(self)
@@ -184,7 +240,7 @@ class CreateDiskDialog(QDialog):
         row += 1
 
         self.disk_label = label("Disk")
-        self.chooser = DiskChooser()
+        self.chooser = DiskChooser(partitions=True)
         self.chooser.changed.connect(self._disk_changed)
         grid.addWidget(self.disk_label, row, 0, Qt.AlignTop)
         grid.addWidget(self.chooser, row, 1)
@@ -377,7 +433,7 @@ class CreateDiskDialog(QDialog):
             return None
         out = self.output()
         return Job(source=Path(path), target=self.picker.target(), output=out, verify=self.verify_chk.isChecked(),
-                   overwrite=out == self._overwrite_ok, elevate="pkexec")
+                   overwrite=out == self._overwrite_ok, elevate="pkexec", partitions=self.chooser.selection())
 
     # ------------------------------------------------------------------ reacting
 
@@ -387,6 +443,8 @@ class CreateDiskDialog(QDialog):
             return
         disk = self.chooser.disk() if self.physical else None
         stem = disk.stem if disk is not None else "New disk"
+        if disk is not None and self.chooser.selection():
+            stem = devices.partition_stem(disk, self.chooser.selection())
         self.out_edit.setText(str(self._free_name(self.folder / f"{stem}{self.picker.target().format.extension}")))
 
     def _name_typed(self, _text: str) -> None:
@@ -408,6 +466,8 @@ class CreateDiskDialog(QDialog):
     def _disk_changed(self) -> None:
         self._name_for_source()
         self._changed()
+        if self.isVisible():
+            QTimer.singleShot(0, self._fit)      # the partitions' ticks come and go
 
     def _format_changed(self) -> None:
         fmt = self.picker.target().format
@@ -448,9 +508,12 @@ class CreateDiskDialog(QDialog):
         job = self.copy_job()
         if job is None:
             return None, "No disk chosen", [self.chooser.error or "No disks were found."]
-        info = self._device_info.get(str(job.source))
+        if self.chooser.partitions_wanted and not job.partitions:
+            return None, "No partitions chosen", ["Tick the partitions to copy."]
+        key = (str(job.source), job.partitions)
+        info = self._device_info.get(key)
         if info is None:
-            info = self._device_info[str(job.source)] = devices.inspect_device(job.source)
+            info = self._device_info[key] = devices.inspect_device(job.source, job.partitions)
         plan = make_plan(job, self.qemu, info)
         summary = f"{human_bytes(plan.size)} {plan.target.label}, a copy of {info.name}"
         return plan, summary, plan.errors
@@ -517,12 +580,12 @@ class DiskPickerDialog(QDialog):
         title.setFont(scaled_font(title, 1.3, bold=True))
         lay.addWidget(title)
         intro = QLabel("The disk goes into the list like an image file, and is converted into a virtual disk "
-                       "with everything on it. It is only read, never written to; you'll be asked for your "
-                       "password to read it.")
+                       "with everything on it, or with just the partitions you tick. It is only read, never "
+                       "written to; you'll be asked for your password to read it.")
         intro.setObjectName("Muted")
         intro.setWordWrap(True)
         lay.addWidget(intro)
-        self.chooser = DiskChooser()
+        self.chooser = DiskChooser(partitions=True)
         lay.addWidget(self.chooser)
         buttons = QDialogButtonBox()
         self.add_btn = QPushButton("Add")
@@ -533,5 +596,6 @@ class DiskPickerDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
-        self.chooser.changed.connect(lambda: self.add_btn.setEnabled(self.chooser.path() is not None))
+        self.chooser.changed.connect(lambda: self.add_btn.setEnabled(
+            self.chooser.path() is not None and (not self.chooser.partitions_wanted or bool(self.chooser.selection()))))
         self.chooser.refresh()

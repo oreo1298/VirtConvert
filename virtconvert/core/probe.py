@@ -39,6 +39,7 @@ class ImageInfo:
     device: bool = False                  # a physical disk (devices.py), read through a helper
     title: str = ""                       # ... its name: "Samsung SSD 870 EVO (sda)"
     device_stem: str = ""                 # ... and the name for its image
+    layout: object | None = None          # ... or some of its partitions (devices.PartitionCopy)
     mountpoints: list[str] = field(default_factory=list)   # ... where it is in use
     format: Format | None = None
     file_size: int = 0

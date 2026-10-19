@@ -734,7 +734,9 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ adding and inspecting
 
-    def add_files(self, paths: list[str] | None = None) -> None:
+    def add_files(self, paths: list[str] | None = None, partitions: tuple[int, ...] = ()) -> None:
+        """Put images in the list (asking for them when PATHS is None); PARTITIONS picks partitions of a
+        physical disk."""
         if paths is None:
             paths, _ = QFileDialog.getOpenFileNames(self, "Add disk images", self._last_dir(),
                                                     IMAGE_FILTER)
@@ -754,14 +756,14 @@ class MainWindow(QMainWindow):
                 except OSError:
                     resolved = path
                 name = f"{path.name} › {member}" if member else path.name
-                if (resolved, member) in known:
+                if (resolved, member, partitions) in known:
                     self.log(f"{name} is already in the list.", "detail")
                     continue
                 if resolved.is_dir():
                     self.log(f"{path.name} is a folder; add the image files in it.", "warning")
                     continue
-                known.add((resolved, member))
-                item = Item(source=resolved, target=Target(F.VDI), member=member)
+                known.add((resolved, member, partitions))
+                item = Item(source=resolved, target=Target(F.VDI), member=member, partitions=partitions)
                 self.model.add(item)
                 self._inspect(item)
                 added += 1
@@ -774,11 +776,11 @@ class MainWindow(QMainWindow):
         item.state = INSPECTING
         self.model.refresh(item)
         qemu, parents, force = self.qemu, dict(item.parents), item.force_parent
-        source, member, item_id = item.source, item.member, item.id
+        source, member, item_id, partitions = item.source, item.member, item.id, item.partitions
 
         def work():
             try:
-                info = inspect_image(source, qemu, parents, force, member=member)
+                info = inspect_image(source, qemu, parents, force, member=member, partitions=partitions)
             except Exception as exc:  # noqa: BLE001 - shown on the item
                 info = exc
             self.inspected.emit(item_id, info)
@@ -851,7 +853,7 @@ class MainWindow(QMainWindow):
             item.output = item.output.with_suffix(item.target.format.extension)
         job = Job(source=item.source, target=item.target, output=item.output,
                   overwrite=self.act_overwrite.isChecked() or item.overwrite, parents=dict(item.parents),
-                  force_parent=item.force_parent, member=item.member)
+                  force_parent=item.force_parent, member=item.member, partitions=item.partitions)
         item.plan = make_plan(job, self.qemu, item.info)
         item.target = job.target
         clash = next((i for i in self.model.items if i is not item and i.output == item.output
@@ -1275,6 +1277,7 @@ class MainWindow(QMainWindow):
                   verify=self.verify_chk.isChecked(),
                   overwrite=self.act_overwrite.isChecked() or item.overwrite,
                   parents=dict(item.parents), force_parent=item.force_parent, member=item.member,
+                  partitions=item.partitions,
                   elevate="pkexec")
         log = self.logLine.emit
 
@@ -1458,10 +1461,11 @@ class MainWindow(QMainWindow):
         dialog = DiskPickerDialog(self)
         try:
             path = dialog.exec() and dialog.chooser.path()
+            partitions = dialog.chooser.selection()
         finally:
             dialog.deleteLater()
         if path:
-            self.add_files([path])
+            self.add_files([path], partitions=partitions)
 
     # ------------------------------------------------------------------ writing onto a physical disk
 

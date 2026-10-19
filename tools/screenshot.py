@@ -109,8 +109,14 @@ def make_demo(folder: Path) -> list[Path]:
 
 
 def demo_disks() -> list:
-    """Two disks as lsblk would describe them: a second SSD with Windows on it, and a USB stick."""
+    """Disks as lsblk would describe them: a 1 TB hard disk with a big NTFS partition and a small
+    ext4 one, a second SSD with Windows on it, and a USB stick."""
     D, P = devices.PhysicalDisk, devices.DiskPart
+    linux = "0fc63daf-8483-4772-8e79-3d69d8477de4"
+    hdd = D(path="/dev/sda", name="sda", size=1000204886016, model="WDC WD10EZEX-00BBHA0", transport="sata",
+            table="gpt", partitions=[
+                P("sda1", "/dev/sda1", 967741243392, "ntfs", "Storage", DATA, start=1048576, number=1),
+                P("sda2", "/dev/sda2", 32212254720, "ext4", "Projects", linux, start=967742291968, number=2)])
     ssd = D(path="/dev/sdb", name="sdb", size=500107862016, model="Samsung SSD 870 EVO 500GB", transport="sata",
             table="gpt", partitions=[
                 P("sdb1", "/dev/sdb1", 104857600, "vfat", "", EFI),
@@ -120,7 +126,7 @@ def demo_disks() -> list:
     stick = D(path="/dev/sdc", name="sdc", size=31004295168, model="Ultra", vendor="SanDisk", transport="usb",
               removable=True, table="dos", partitions=[P("sdc1", "/dev/sdc1", 31003246592, "exfat", "STICK", "0x7")],
               mountpoints=["/run/media/me/STICK"], mounted=[("/dev/sdc1", "/run/media/me/STICK")])
-    return [ssd, stick]
+    return [hdd, ssd, stick]
 
 
 def main() -> int:
@@ -214,15 +220,21 @@ def main() -> int:
         dialog.grab().save(str(args.out / f"create-{args.theme}.png"))
         dialog.close()
 
-        # New disk from a physical disk (demo disks: this computer's own are not shown)
+        # New disk from a physical disk: only its small partition (demo disks: this computer's own
+        # are not shown)
         demo = demo_disks()
         devices.list_disks = lambda include_loop=False: demo
-        devices.inspect_device = lambda path: devices.info_from_disk(next(d for d in demo if d.path == str(path)))
+        devices.disk_info = lambda path: next(d for d in demo if d.path == str(path))
+        devices.is_device = lambda path: str(path).startswith("/dev/")
+        devices.base_disks = lambda path: {Path(path).name}
         win.settings.setValue("create/source", "physical")
         dialog = CreateDiskDialog(win, win.qemu, win.settings)
         dialog.picker.fmt_seg.set_value("vdi")
         dialog.picker._edited()
         dialog._format_changed()
+        dialog.chooser.scope_seg.set_value("parts")
+        dialog.chooser._scope_changed()
+        dialog.chooser._checks[1][0].setChecked(True)
         dialog._replan()
         dialog.show()
         pump(0.5)
@@ -230,9 +242,6 @@ def main() -> int:
         dialog.close()
 
         # Write to disk: the Ubuntu disk onto the USB stick (demo disks again)
-        devices.is_device = lambda path: str(path).startswith("/dev/")
-        devices.disk_info = lambda path: next(d for d in demo if d.path == str(path))
-        devices.base_disks = lambda path: {Path(path).name}
         win.table.selectRow(3)
         pump(0.2)
         item = win.current_item()

@@ -201,6 +201,7 @@ class Job:
     candidates: list[Path] = field(default_factory=list)
     member: str | None = None        # a disk inside the OVA SOURCE
     elevate: str = "auto"            # how to read a physical disk: pkexec, sudo, auto (devices.elevator)
+    partitions: tuple[int, ...] = ()     # only these partitions of the physical disk SOURCE
 
 
 @dataclass
@@ -258,7 +259,8 @@ def make_plan(job: Job, qemu: QemuImg | None, info: ImageInfo | None = None) -> 
     """Check everything that can be checked before converting."""
     job.target = job.target.normalized()
     if info is None:
-        info = inspect_image(job.source, qemu, job.parents, job.force_parent, job.candidates, job.member)
+        info = inspect_image(job.source, qemu, job.parents, job.force_parent, job.candidates, job.member,
+                             job.partitions)
     plan = Plan(job=job, info=info)
     target = job.target
     fmt = target.format
@@ -354,12 +356,19 @@ def check_space(plan, out: Path, needed: int, fmt: Format) -> None:
 
 
 def _device_checks(plan: Plan) -> None:
-    """A physical disk: never save its copy on itself, and tell what being in use means."""
+    """A physical disk: never save its copy on what is being read, and tell what being in use means."""
     info, out = plan.info, plan.job.output
-    same = devices.disks_holding(out.parent) & devices.base_disks(info.path)
-    if same:
-        plan.errors.append(f"{out.parent} is on the disk being copied ({', '.join(sorted(same))}). Save the "
-                           "copy on another drive.")
+    if info.layout is not None:
+        # some partitions: the copy may go onto another partition of the same disk
+        same = devices.partitions_holding(out.parent) & {p.part.name for p in info.layout.placements}
+        if same:
+            plan.errors.append(f"{out.parent} is on {', '.join(sorted(same))}, a partition being copied. Save the "
+                               "copy on another partition or drive.")
+    else:
+        same = devices.disks_holding(out.parent) & devices.base_disks(info.path)
+        if same:
+            plan.errors.append(f"{out.parent} is on the disk being copied ({', '.join(sorted(same))}). Save the "
+                               "copy on another drive.")
     if info.mountpoints:
         plan.can_verify = False
         shown = ", ".join(info.mountpoints[:4]) + ("…" if len(info.mountpoints) > 4 else "")
@@ -374,10 +383,21 @@ def _device_checks(plan: Plan) -> None:
     if not os.access(info.path, os.R_OK):
         plan.notes.append("Reading a disk needs administrator rights: you'll be asked for your password.")
     plan.notes.append("The disk is only read, never written to.")
+    if info.layout is not None and _starts_a_system(info):
+        plan.notes.append("A system on the copied partitions moves with them: to start it in a virtual machine, "
+                          "include its EFI system partition; Windows also needs its boot files rebuilt there "
+                          "(bcdboot). For a copy that starts as it is, copy the whole disk.")
     if guess_os(info) == "windows":
         plan.notes.append("Windows: shut it down completely before copying (Fast Startup leaves the disk "
                           "half-saved: hold Shift while clicking Shut down), and keep the BitLocker recovery key "
                           "at hand if the disk is encrypted: the virtual machine will ask for it.")
+
+
+def _starts_a_system(info: ImageInfo) -> bool:
+    """Whether the partitions look like what a computer starts from (not just a data partition)."""
+    parts = info.partitions.partitions if info.partitions else []
+    return any(p.kind in ("EFI system", "BIOS boot", "Microsoft reserved", "Windows recovery")
+               or p.kind.startswith("Linux root") or p.bootable for p in parts)
 
 
 def _compatibility_notes(plan: Plan) -> None:
@@ -502,10 +522,20 @@ def open_source(info: ImageInfo, size: int, through_reader: bool, elevate: str =
             log(f"Opening {info.path} for reading")
             fd = devices.open_device(info.path, elevate, cancel)
             try:
-                reader = devices.DeviceReader(fd, size, info.name)
+                disk = devices.DeviceReader(fd, info.layout.disk.size if info.layout is not None else size, info.name)
             except BaseException:
                 os.close(fd)
                 raise
+            if info.layout is not None:
+                # some partitions: a new partition table, and their bytes where they are on the disk
+                try:
+                    reader = devices.PartitionReader(disk, info.layout, size)
+                except BaseException:
+                    disk.close()
+                    raise
+                log(f"Reading only {info.layout.names}")
+            else:
+                reader = disk
             server = NbdServer(reader).start()
             source = nbd_spec(server.socket_path, server.export)
         elif through_reader:

@@ -22,7 +22,9 @@ distributions. Design notes: docs/HOW-IT-WORKS.md.
   `system.py` (doctor, distro package names for qemu-img and the mkfs tools, `find_program` incl. sbin),
   `devices.py` (physical disks: `list_disks` from lsblk, `inspect_device` → `ImageInfo.device`, `open_device`
   with the pkexec/sudo fd-passing helper (read-only, or `write=True`: O_RDWR|O_EXCL), `DeviceReader`,
-  `DeviceWriter`, `disks_holding`, `unmount`), `writedisk.py` (`DiskWrite`, `make_write_plan`, `write_to_disk`:
+  `DeviceWriter`, `disks_holding`, `unmount`; some partitions only: `plan_partition_copy` → `PartitionCopy`
+  (`ImageInfo.layout`), `PartitionReader` builds a new GPT/MBR from the disk's own entries
+  (`partitions.read_entries`)), `writedisk.py` (`DiskWrite`, `make_write_plan`, `write_to_disk`:
   an image onto a physical disk through the writable NBD server, verify, `partitions.move_backup_gpt`).
 - `virtconvert/gui/` — PySide6. `main_window.py` (toolbar Add/New disk/Write to disk/Convert; a sidebar shown
   once the list has images: Image summary, Convert to with Compare and an Options menu; the queue table; the
@@ -54,7 +56,9 @@ distributions. Design notes: docs/HOW-IT-WORKS.md.
 - OVA: written from a stream VMDK made in `work/appliance/`, verified through `member_spec` inside the archive.
 - Physical disks: read only through a file descriptor from the root helper (never qemu-img as root), served via
   NBD (`plan.uses_reader` is always true for devices). Never save onto the source disk (`_device_checks`); a
-  mounted disk gets `plan.can_verify = False`.
+  mounted disk gets `plan.can_verify = False`. With `Job.partitions` only the chosen partitions are read (their
+  positions from sysfs, checked against the disk's own table once open); the image may go onto another partition of
+  the same disk, never onto a chosen one (`partitions_holding`).
 - New disks: sparse raw scratch + `mkfs` on a partition-sized sparse file + `copy_allocated`; empty disks use
   `qemu-img create`. VHDX targets are verified with the own reader (`compare_with_reader` + `stored_ranges`),
   since qemu's VHDX driver has no block status and `qemu-img compare` would read every byte.

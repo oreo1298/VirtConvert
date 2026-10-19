@@ -35,9 +35,19 @@ from typing import Callable
 from . import formats as F
 from .errors import ConvertError, OperationCancelled
 from .nbd import _socket_parent
-from .partitions import GPT_TYPES, MBR_TYPES, Partition, PartitionTable, analyze
+from .partitions import (
+    EXTENDED_TYPES,
+    GPT_TYPES,
+    MBR_TYPES,
+    Partition,
+    PartitionTable,
+    analyze,
+    gpt_with_entries,
+    mbr_table,
+    read_entries,
+)
 from .probe import ImageInfo
-from .util import MIB, human_bytes
+from .util import MIB, human_bytes, round_up
 
 LSBLK_COLUMNS = ("NAME,KNAME,TYPE,SIZE,MODEL,VENDOR,SERIAL,TRAN,RM,RO,LOG-SEC,PHY-SEC,PTTYPE,PARTTYPE,"
                  "PARTFLAGS,FSTYPE,LABEL,MOUNTPOINT")
@@ -79,6 +89,35 @@ class DiskPart:
     parttype: str = ""       # GPT type GUID, or the MBR type as "0x83"
     bootable: bool = False   # MBR active flag
     start: int = -1          # bytes from the disk's start (from /sys; -1: unknown)
+    number: int = 0          # sdb3 -> 3 (from /sys; 0: unknown)
+    mountpoints: list[str] = field(default_factory=list)   # of the partition and what is on it
+
+    @property
+    def kind(self) -> str:
+        """'EFI system', 'Linux filesystem', 'NTFS/exFAT'… from its type ('' if unknown)."""
+        text = self.parttype.lower()
+        if "-" in text:
+            return GPT_TYPES.get(text, "")
+        try:
+            return MBR_TYPES.get(int(text, 16), "")
+        except ValueError:
+            return ""
+
+    @property
+    def extended(self) -> bool:
+        try:
+            return int(self.parttype, 16) in EXTENDED_TYPES
+        except ValueError:
+            return False
+
+    @property
+    def summary(self) -> str:
+        """'sdb2 · 30 GB · ext4 “Data” · in use (/home)'."""
+        what = " ".join(x for x in (self.fstype or self.kind, f"“{self.label}”" if self.label else "") if x)
+        parts = [self.name, human_bytes(self.size)] + ([what] if what else [])
+        if self.mountpoints:
+            parts.append(f"in use ({', '.join(self.mountpoints[:2])})")
+        return " · ".join(parts)
 
 
 @dataclass
@@ -251,12 +290,13 @@ def _disk(entry: dict) -> PhysicalDisk:
         if _value(child, "type") == "part":
             cname = _value(child, "kname", "") or _value(child, "name", "")
             start = _number(_sys_value(cname, "start"), -1)       # always 512-byte units
+            number = _number(_sys_value(cname, "partition"), 0)
             disk.partitions.append(DiskPart(
                 name=cname, path=f"/dev/{cname}", size=_number(child.get("size")),
                 fstype=str(_value(child, "fstype", "")), label=str(_value(child, "label", "")),
                 parttype=str(_value(child, "parttype", "")),
                 bootable=str(_value(child, "partflags", "")).lower() == "0x80",
-                start=start * 512 if start >= 0 else -1))
+                start=start * 512 if start >= 0 else -1, number=number, mountpoints=_mounts(child)))
             disk.mounted += [(f"/dev/{cname}", m) for m in _own_mounts(child)]
     return disk
 
@@ -310,16 +350,26 @@ def is_device(path: str | os.PathLike) -> bool:
         return False
 
 
-def inspect_device(path: str | os.PathLike) -> ImageInfo:
-    """A physical disk (or partition) as an ImageInfo of a raw image. Nothing is read from the
-    disk itself: everything comes from lsblk."""
+def inspect_device(path: str | os.PathLike, partitions: tuple[int, ...] = ()) -> ImageInfo:
+    """A physical disk as an ImageInfo of a raw image, or with PARTITIONS (numbers) a new disk made
+    of just those (info.layout). A partition's own path stands for its disk with that partition.
+    Nothing is read from the disk itself: everything comes from lsblk and /sys."""
     try:
         disk = disk_info(path)
+        if disk.kind == "part" and not partitions:
+            parent, number = parent_disk(path), _number(_sys_value(disk.name, "partition"), 0)
+            if parent and number:
+                disk, partitions = disk_info(f"/dev/{parent}"), (number,)
+        if partitions:
+            if not disk.table:
+                disk.table = _table_kind(disk)       # lsblk without udev doesn't know it
+            layout = plan_partition_copy(disk, partitions)
     except ConvertError as exc:
         info = ImageInfo(path=Path(path), format=F.RAW, device=True)
         info.errors.append(str(exc))
         return info
-    return info_from_disk(disk, Path(path))
+    info = info_from_disk(disk, Path(disk.path) if partitions else Path(path))
+    return info_from_layout(info, layout) if partitions else info
 
 
 def info_from_disk(disk: PhysicalDisk, path: Path | None = None) -> ImageInfo:
@@ -356,6 +406,172 @@ def info_from_disk(disk: PhysicalDisk, path: Path | None = None) -> ImageInfo:
         info.notes.append("This is one partition: the image holds just its file system, without a partition "
                           "table. To start a computer from the copy, copy the whole disk instead.")
     return info
+
+
+# ---------------------------------------------------------------------- copying some partitions
+
+@dataclass
+class Placement:
+    part: DiskPart
+    source: int          # where it starts on the disk
+    target: int          # where it starts in the copy
+
+
+@dataclass
+class PartitionCopy:
+    """Some partitions of DISK put together as a new disk: the same kind of partition table, each
+    partition from 1 MB on, one after the other (the space between and after them left out)."""
+    disk: PhysicalDisk
+    scheme: str                          # "gpt" or "mbr"
+    placements: list[Placement]
+    size: int                            # of the new disk
+
+    @property
+    def names(self) -> str:
+        return ", ".join(p.part.name for p in self.placements)
+
+    @property
+    def data_size(self) -> int:
+        return sum(p.part.size for p in self.placements)
+
+
+def _table_kind(disk: PhysicalDisk) -> str:
+    """'gpt' or 'dos' from the disk's first sectors, when it can be read without a password."""
+    if not disk.partitions or not os.access(disk.path, os.R_OK):
+        return ""
+    try:
+        fd = os.open(disk.path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+        try:
+            scheme, _ = read_entries(lambda offset, n: os.pread(fd, n, offset), disk.logical_sector)
+        finally:
+            os.close(fd)
+    except OSError:
+        return ""
+    return {"gpt": "gpt", "mbr": "dos"}.get(scheme, "")
+
+
+def plan_partition_copy(disk: PhysicalDisk, numbers: tuple[int, ...]) -> PartitionCopy:
+    """Where the partitions NUMBERS of DISK go in a new disk (ConvertError when they can't). The
+    kind of table is '' when nobody could say (lsblk without udev, and no rights to read the disk):
+    the disk's own table decides once it is open (PartitionReader)."""
+    scheme = {"gpt": "gpt", "dos": "mbr"}.get(disk.table, "" if disk.partitions else None)
+    if scheme is None:
+        raise ConvertError(f"{disk.title} has no partition table to choose partitions from: copy the whole disk.")
+    if not numbers:
+        raise ConvertError("Choose the partitions to copy.")
+    by_number = {p.number: p for p in disk.partitions if p.number}
+    chosen = []
+    for n in dict.fromkeys(numbers):
+        part = by_number.get(n)
+        if part is None:
+            raise ConvertError(f"{disk.name} has no partition {n}" +
+                               (f" (it has {', '.join(p.name for p in disk.partitions)})." if disk.partitions else "."))
+        if part.extended:
+            raise ConvertError(f"{part.name} is an extended partition, a container for the logical ones: choose "
+                               "those instead.")
+        if part.start < 0:
+            raise ConvertError(f"Where {part.name} starts on the disk isn't known (/sys doesn't say): copy the whole "
+                               "disk instead.")
+        chosen.append(part)
+    if scheme == "mbr" and len(chosen) > 4:
+        raise ConvertError("An MBR disk holds four partitions: choose at most four, or copy the whole disk.")
+    placements, at = [], MIB
+    for part in sorted(chosen, key=lambda p: p.start):
+        placements.append(Placement(part, part.start, at))
+        at = round_up(at + part.size, MIB)
+    return PartitionCopy(disk, scheme, placements, at + (0 if scheme == "mbr" else MIB))
+
+
+def partition_stem(disk: PhysicalDisk, numbers: tuple[int, ...]) -> str:
+    """A file name for a copy of some partitions: one partition's file system label, or the disk's
+    name with the partitions' ('Samsung SSD 870 sda2 sda3')."""
+    parts = [p for p in disk.partitions if p.number in numbers]
+    if len(parts) == 1 and parts[0].label:
+        label = re.sub(r"[^\w.+-]+", " ", parts[0].label).strip()[:60]
+        if label:
+            return label
+    return " ".join([disk.stem] + [p.name for p in parts])
+
+
+def info_from_layout(disk_info_: ImageInfo, layout: PartitionCopy) -> ImageInfo:
+    """The ImageInfo of the new disk LAYOUT makes, from that of its physical disk."""
+    disk = layout.disk
+    info = disk_info_
+    info.layout = layout
+    info.title = f"{disk.title} › {layout.names}"
+    info.device_stem = partition_stem(disk, tuple(p.part.number for p in layout.placements))
+    info.virtual_size = info.file_size = layout.size
+    info.allocated = layout.data_size
+    count = len(layout.placements)
+    info.subformat = f"{count} partition{'s' if count > 1 else ''} of a physical disk" + (f", {disk.bus}" if disk.bus else "")
+    table = PartitionTable(layout.scheme or "gpt")
+    for n, p in enumerate(layout.placements, 1):
+        table.partitions.append(Partition(n, p.target, p.part.size, p.part.kind or "Other", p.part.label,
+                                          bootable=p.part.bootable))
+    info.partitions = table
+    info.mountpoints = list(dict.fromkeys(m for p in layout.placements for m in p.part.mountpoints))
+    info.notes = [n for n in info.notes if "copy the whole disk instead" not in n]
+    info.notes.append(f"Only {layout.names} {'is' if count == 1 else 'are'} read ({human_bytes(layout.data_size)} of "
+                      f"the {human_bytes(disk.size)} disk). The copy is a {human_bytes(layout.size)} disk with "
+                      f"{'it' if count == 1 else 'them'} from 1 MB on, in a new "
+                      f"{ {'gpt': 'GPT', 'mbr': 'MBR'}.get(layout.scheme, '') or 'partition table like the disk’s'}"
+                      f"{' partition table' if layout.scheme else ''}.")
+    if disk.logical_sector != 512:
+        info.notes.append("The disk uses 4 KB sectors and the copy 512-byte ones; most file systems don't mind.")
+    info.logical_sector = 512
+    return info
+
+
+class PartitionReader:
+    """Reads the disk a PartitionCopy describes for the NBD server: a new partition table, and the
+    partitions' bytes from the physical disk BASE where they are. Before anything is read, the
+    disk's own table is compared with the plan (and gives the entries for the new one: types,
+    unique IDs, names, attributes)."""
+
+    def __init__(self, base: "DeviceReader", layout: PartitionCopy, size: int = 0):
+        self.base = base
+        self.layout = layout
+        self.name = base.name
+        self.size = max(size, layout.size)
+        disk = layout.disk
+        scheme, entries = read_entries(base.read, disk.logical_sector)
+        if scheme == "none" or (layout.scheme and scheme != layout.scheme):
+            raise ConvertError(f"The partition table of {disk.title} isn't the one it had when it was chosen. "
+                               "Choose the partitions again.")
+        if scheme == "mbr" and len(layout.placements) > 4:
+            raise ConvertError("An MBR disk holds four partitions: choose at most four, or copy the whole disk.")
+        self.extents: list[tuple[int, int, int]] = []     # (in the copy, size, on the disk)
+        gpt_entries, mbr_entries = [], []
+        for p in layout.placements:
+            e = entries.get(p.part.number)
+            if e is None or e.start != p.source or e.size != p.part.size:
+                raise ConvertError(f"{p.part.name} isn't where it was when the disk was chosen: was the disk "
+                                   "partitioned meanwhile? Choose the partitions again.")
+            self.extents.append((p.target, p.part.size, p.source))
+            if scheme == "gpt":
+                entry = bytearray(e.gpt_entry)
+                struct.pack_into("<QQ", entry, 32, p.target // 512, (p.target + p.part.size) // 512 - 1)
+                gpt_entries.append(bytes(entry))
+            else:
+                mbr_entries.append((p.target, p.part.size, e.mbr_type, e.active))
+        self.chunks = gpt_with_entries(layout.size, gpt_entries) if scheme == "gpt" else mbr_table(mbr_entries)
+
+    def read(self, offset: int, length: int) -> bytes:
+        length = max(0, min(length, self.size - offset))
+        end = offset + length
+        buf = bytearray(length)
+        for at, data in self.chunks.items():
+            lo, hi = max(offset, at), min(end, at + len(data))
+            if lo < hi:
+                buf[lo - offset:hi - offset] = data[lo - at:hi - at]
+        for target, size, source in self.extents:
+            lo, hi = max(offset, target), min(end, target + size)
+            if lo < hi:
+                buf[lo - offset:hi - offset] = self.base.read(source + lo - target, hi - lo)
+        return bytes(buf)
+
+    def close(self) -> None:
+        self.base.close()
 
 
 # ---------------------------------------------------------------------- where a folder lives
@@ -407,6 +623,41 @@ def disks_holding(path: str | os.PathLike) -> set[str]:
         if source.startswith("/dev/"):
             found = _sys_disks(f"/sys/class/block/{os.path.basename(os.path.realpath(source))}")
     return found
+
+
+def _sys_parts(sysdir: str) -> set[str]:
+    """Like _sys_disks, but stopping at partitions: the partitions (or whole disks) under it."""
+    real = os.path.realpath(sysdir)
+    if not os.path.isdir(real):
+        return set()
+    slaves = os.path.join(real, "slaves")
+    below = os.listdir(slaves) if os.path.isdir(slaves) else []
+    if below:
+        return set().union(*(_sys_parts(os.path.join(slaves, s)) for s in below))
+    return {os.path.basename(real)}
+
+
+def partitions_holding(path: str | os.PathLike) -> set[str]:
+    """Names of the partitions (or whole disks without any) the folder PATH is stored on."""
+    path = os.path.realpath(path)
+    try:
+        dev = os.stat(path).st_dev
+    except OSError:
+        return set()
+    found = _sys_parts(f"/sys/dev/block/{os.major(dev)}:{os.minor(dev)}") if os.major(dev) else set()
+    if not found:
+        source = _mount_source(path)
+        if source.startswith("/dev/"):
+            found = _sys_parts(f"/sys/class/block/{os.path.basename(os.path.realpath(source))}")
+    return found
+
+
+def parent_disk(device: str | os.PathLike) -> str | None:
+    """The disk a partition is on (sdb for /dev/sdb2), or None."""
+    real = os.path.realpath(f"/sys/class/block/{os.path.basename(os.path.realpath(device))}")
+    if os.path.exists(os.path.join(real, "partition")):
+        return os.path.basename(os.path.dirname(real))
+    return None
 
 
 def base_disks(device: str | os.PathLike) -> set[str]:
@@ -742,4 +993,5 @@ class DeviceWriter:
 
 
 __all__ = ["PhysicalDisk", "DiskPart", "list_disks", "disk_info", "is_device", "inspect_device", "info_from_disk",
+           "PartitionCopy", "plan_partition_copy", "PartitionReader", "partitions_holding", "parent_disk",
            "disks_holding", "base_disks", "elevator", "open_device", "unmount", "DeviceReader", "DeviceWriter"]

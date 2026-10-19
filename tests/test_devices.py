@@ -261,3 +261,226 @@ def test_disks_command(fake_lsblk, capsys):
     assert "zram0" not in out and "--from /dev/sdX" in out
     assert cli.main(["disks", "--json"]) == 0
     assert '"title": "SanDisk Flash Drive (sdb)"' in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------- copying some partitions
+
+ESP_TYPE, DATA_TYPE = ESP, LINUX
+
+
+def gpt_disk_file(path, size, parts):
+    """A GPT disk image with PARTS (first LBA, last LBA, type, name), each filled with its own random
+    bytes; returns the bytes."""
+    data = bytearray(b"\xee" * size)          # what isn't a partition: old junk
+    for at, chunk in gpt_sectors(size, parts).items():
+        data[at:at + len(chunk)] = chunk
+    for first, last, _t, _n in parts:
+        data[first * SECTOR:(last + 1) * SECTOR] = os.urandom((last - first + 1) * SECTOR)
+    path.write_bytes(bytes(data))
+    return bytes(data)
+
+
+def parts_of(name, parts, fstypes=()):
+    return [devices.DiskPart(f"{name}{n}", f"/dev/{name}{n}", (last - first + 1) * SECTOR,
+                             fstypes[n - 1] if n <= len(fstypes) else "", "", ptype, start=first * SECTOR, number=n)
+            for n, (first, last, ptype, _name) in enumerate(parts, 1)]
+
+
+GPT_PARTS = [(2048, 4095, ESP_TYPE, "EFI system partition"), (4096, 40959, DATA_TYPE, "Big"),
+             (40960, 51199, DATA_TYPE, "Small")]
+
+
+def read_raw(qemu, path, driver, tmp_path):
+    out = tmp_path / "read.raw"
+    qemu.check_run(["convert", "-f", driver, "-O", "raw", str(path), str(out)], "test")
+    data = out.read_bytes()
+    out.unlink()
+    return data
+
+
+def test_copy_some_partitions(qemu, fake_disk, tmp_path):
+    disk = fake_disk(32 * MIB, table="gpt")
+    data = gpt_disk_file(Path(disk.path), 32 * MIB, GPT_PARTS)
+    disk.partitions = parts_of("sdz", GPT_PARTS, ("vfat", "ext4", "ext4"))
+    disk.partitions[2].label = "Small"
+    plan = make_plan(Job(source=Path(disk.path), target=parse_target("vdi"), output=tmp_path / "x.vdi",
+                         partitions=(3, 1)), qemu)
+    assert plan.ok, plan.errors
+    info = plan.info
+    assert info.name == "Test Stick (sdz) › sdz1, sdz3" and info.layout.names == "sdz1, sdz3"
+    assert plan.size == 1 * MIB + 1 * MIB + 5 * MIB + 1 * MIB         # 1 MB, the ESP, Small, the backup GPT
+    assert any("Only sdz1, sdz3 are read (6 MB of the 32 MB disk)" in n for n in plan.notes)
+    assert any("include its EFI system partition" in n for n in plan.notes)
+    outcome = execute(plan, qemu)
+    assert outcome.verified
+    copy = read_raw(qemu, outcome.output, "vdi", tmp_path)
+    assert len(copy) == plan.size
+    assert copy[MIB:2 * MIB] == data[2048 * SECTOR:4096 * SECTOR]          # the ESP, at 1 MB
+    assert copy[2 * MIB:7 * MIB] == data[40960 * SECTOR:51200 * SECTOR]    # Small, right after it
+    from virtconvert.core.partitions import read_entries
+    scheme, entries = read_entries(lambda o, n: copy[o:o + n], SECTOR)
+    _, original = read_entries(lambda o, n: data[o:o + n], SECTOR)
+    assert scheme == "gpt" and sorted(entries) == [1, 2]
+    for new, old in ((entries[1], original[1]), (entries[2], original[3])):
+        assert new.gpt_entry[:32] == old.gpt_entry[:32]             # type and unique GUID kept
+        assert new.gpt_entry[48:] == old.gpt_entry[48:]             # attributes and name kept
+    if shutil.which("sfdisk"):
+        (tmp_path / "copy.raw").write_bytes(copy)
+        res = subprocess.run(["sfdisk", "--verify", str(tmp_path / "copy.raw")], capture_output=True, text=True)
+        assert "No errors detected" in res.stdout, res.stdout + res.stderr
+    # named after the partition's file system label when there's one
+    plan = make_plan(Job(source=Path(disk.path), target=parse_target("vhdx"), output=tmp_path / "y.vhdx",
+                         partitions=(3,)), qemu)
+    assert plan.info.stem == "Small"
+
+
+def test_copy_a_logical_partition(qemu, fake_disk, tmp_path):
+    """An MBR disk: a primary partition and, inside the extended one, two logical ones."""
+    import struct
+    size = 32 * MIB
+    data = bytearray(size)
+
+    def entry(at, status, ptype, lba, count):
+        struct.pack_into("<B3sB3sII", data, at, status, b"\0\0\0", ptype, b"\0\0\0", lba, count)
+
+    entry(446, 0x80, 0x83, 2048, 4096)               # sdz1
+    entry(462, 0, 0x05, 8192, 40960)                 # sdz2: extended, 8192..49151
+    data[510:512] = b"\x55\xaa"
+    entry(8192 * SECTOR + 446, 0, 0x07, 2048, 8192)   # sdz5 at 10240
+    entry(8192 * SECTOR + 462, 0, 0x05, 20480, 12288)  # next EBR at 8192 + 20480
+    data[8192 * SECTOR + 510:8192 * SECTOR + 512] = b"\x55\xaa"
+    entry(28672 * SECTOR + 446, 0, 0x83, 2048, 10240)  # sdz6 at 30720
+    data[28672 * SECTOR + 510:28672 * SECTOR + 512] = b"\x55\xaa"
+    sdz6 = os.urandom(10240 * SECTOR)
+    data[30720 * SECTOR:40960 * SECTOR] = sdz6
+    disk = fake_disk(size, table="dos")
+    Path(disk.path).write_bytes(bytes(data))
+    P = devices.DiskPart
+    disk.partitions = [P("sdz1", "", 4096 * SECTOR, parttype="0x83", start=2048 * SECTOR, number=1, bootable=True),
+                       P("sdz2", "", 1024, parttype="0x5", start=8192 * SECTOR, number=2),
+                       P("sdz5", "", 8192 * SECTOR, parttype="0x7", start=10240 * SECTOR, number=5),
+                       P("sdz6", "", 10240 * SECTOR, parttype="0x83", start=30720 * SECTOR, number=6)]
+    from virtconvert.core.partitions import read_entries
+    scheme, entries = read_entries(lambda o, n: bytes(data[o:o + n]), SECTOR)
+    assert scheme == "mbr" and {n: (e.start // SECTOR, e.mbr_type) for n, e in entries.items()} == \
+        {1: (2048, 0x83), 2: (8192, 0x05), 5: (10240, 0x07), 6: (30720, 0x83)}
+    plan = make_plan(Job(source=Path(disk.path), target=parse_target("qcow2"), output=tmp_path / "l.qcow2",
+                         partitions=(6,)), qemu)
+    assert plan.ok and plan.size == MIB + 5 * MIB, plan.errors
+    outcome = execute(plan, qemu)
+    copy = read_raw(qemu, outcome.output, "qcow2", tmp_path)
+    assert copy[MIB:6 * MIB] == sdz6
+    scheme, entries = read_entries(lambda o, n: copy[o:o + n], SECTOR)
+    assert scheme == "mbr" and [(n, e.start, e.mbr_type) for n, e in entries.items()] == [(1, MIB, 0x83)]
+    errors = make_plan(Job(source=Path(disk.path), target=parse_target("vdi"), output=tmp_path / "e.vdi",
+                           partitions=(2,)), qemu).errors
+    assert "sdz2 is an extended partition" in errors[0]
+
+
+def test_partitions_that_cant_be_copied(fake_disk, tmp_path):
+    disk = fake_disk(32 * MIB, table="gpt")
+    gpt_disk_file(Path(disk.path), 32 * MIB, GPT_PARTS)
+    disk.partitions = parts_of("sdz", GPT_PARTS)
+
+    def error(numbers, **changes):
+        for key, value in changes.items():
+            setattr(disk, key, value)
+        return devices.inspect_device(disk.path, numbers).errors[0]
+
+    assert error((4,)) == "sdz has no partition 4 (it has sdz1, sdz2, sdz3)."
+    with pytest.raises(ConvertError, match="Choose the partitions"):
+        devices.plan_partition_copy(disk, ())
+    disk.partitions[1].start = -1
+    assert "Where sdz2 starts on the disk isn't known" in error((2,))
+    # lsblk without udev doesn't know the kind of table: it's read from the disk when that's allowed
+    disk.table = ""
+    info = devices.inspect_device(disk.path, (1,))
+    assert info.ok and info.layout.scheme == "gpt" and disk.table == "gpt", info.errors
+    assert "has no partition table" in error((1,), table="", partitions=[])
+    many = fake_disk(64 * MIB, name="sdy", table="dos")
+    many.partitions = [devices.DiskPart(f"sdy{n}", "", MIB, parttype="0x83", start=n * MIB, number=n)
+                       for n in range(1, 6)]
+    assert "four partitions" in devices.inspect_device(many.path, (1, 2, 3, 4, 5)).errors[0]
+
+
+def test_the_partitions_changed(qemu, fake_disk, tmp_path):
+    disk = fake_disk(32 * MIB, table="gpt")
+    gpt_disk_file(Path(disk.path), 32 * MIB, GPT_PARTS)
+    disk.partitions = parts_of("sdz", GPT_PARTS)
+    plan = make_plan(Job(source=Path(disk.path), target=parse_target("vdi"), output=tmp_path / "x.vdi",
+                         partitions=(2,)), qemu)
+    gpt_disk_file(Path(disk.path), 32 * MIB, [(2048, 30000, DATA_TYPE, "Other")])     # repartitioned
+    with pytest.raises(ConvertError, match="sdz2 isn't where it was when the disk was chosen"):
+        execute(plan, qemu)
+    assert not list(tmp_path.glob("x.vdi*"))
+
+
+def test_in_use_and_saving_next_to_it(qemu, fake_disk, tmp_path, monkeypatch):
+    """Only the chosen partitions count: another one may be mounted, and the copy may go onto it."""
+    disk = fake_disk(32 * MIB, table="gpt", mountpoints=["/", "/data"])
+    gpt_disk_file(Path(disk.path), 32 * MIB, GPT_PARTS)
+    disk.partitions = parts_of("sdz", GPT_PARTS)
+    disk.partitions[0].mountpoints = ["/"]
+    disk.partitions[1].mountpoints = ["/data"]
+    monkeypatch.setattr(devices, "partitions_holding", lambda path: {"sdz2"})
+    plan = make_plan(Job(source=Path(disk.path), target=parse_target("vdi"), output=tmp_path / "x.vdi",
+                         partitions=(3,)), qemu)
+    assert plan.ok and plan.can_verify and not plan.warnings, (plan.errors, plan.warnings)
+    plan = make_plan(Job(source=Path(disk.path), target=parse_target("vdi"), output=tmp_path / "x.vdi",
+                         partitions=(2, 3)), qemu)
+    assert "is on sdz2, a partition being copied" in plan.errors[0]
+    assert not plan.can_verify and any("mounted at /data" in w for w in plan.warnings)
+    monkeypatch.setattr(devices, "partitions_holding", lambda path: {"sdz9"})
+    plan = make_plan(Job(source=Path(disk.path), target=parse_target("vdi"), output=tmp_path / "x.vdi",
+                         partitions=(1,)), qemu)
+    assert plan.ok and any("running system" in w for w in plan.warnings)
+
+
+def test_copy_partitions_from_the_command_line(qemu, fake_disk, tmp_path, capsys):
+    disk = fake_disk(32 * MIB, table="gpt")
+    data = gpt_disk_file(Path(disk.path), 32 * MIB, GPT_PARTS)
+    disk.partitions = parts_of("sdz", GPT_PARTS)
+    assert cli.main(["create", "-q", str(tmp_path / "p.vhdx"), "--from", disk.path, "--partition", "sdz3"]) == 0
+    out = capsys.readouterr().out
+    assert "a copy of sdz3 of Test Stick (sdz)" in out and "verified identical" in out
+    copy = read_raw(qemu, tmp_path / "p.vhdx", "vhdx", tmp_path)
+    assert copy[MIB:6 * MIB] == data[40960 * SECTOR:51200 * SECTOR]
+    assert cli.main(["create", "-q", str(tmp_path / "q.vdi"), "--from", disk.path, "-p", "2", "-p", "1"]) == 0
+    assert probe(tmp_path / "q.vdi").virtual_size == MIB + MIB + 18 * MIB + MIB
+    assert cli.main(["create", str(tmp_path / "r.vdi"), "--from", disk.path, "--partition", "9"]) == 1
+    assert "sdz has no partition 9" in capsys.readouterr().out
+    with pytest.raises(SystemExit, match="--partition takes a number"):
+        cli.main(["create", str(tmp_path / "r.vdi"), "--from", disk.path, "--partition", "x"])
+
+
+def test_copy_a_partition_of_a_loop_device(qemu, tmp_path, monkeypatch):
+    """A real disk with partitions (losetup -P): /sys has where they start; the copy reads only them."""
+    root = os.geteuid() == 0
+    if not root and (not shutil.which("sudo") or _run(["true"], False).returncode != 0):
+        pytest.skip("needs root or passwordless sudo for a loop device")
+    image = tmp_path / "parts.img"
+    data = gpt_disk_file(image, 32 * MIB, GPT_PARTS)
+    res = _run(["losetup", "-f", "--show", "-P", str(image)], root)
+    if res.returncode != 0:
+        pytest.skip(f"no loop device here: {res.stderr.strip()}")
+    device = res.stdout.strip()
+    try:
+        disk = devices.disk_info(device)
+        if not disk.partitions and shutil.which("partx"):
+            _run(["partx", "-a", device], root)        # loop devices without partition scanning (max_part=0)
+            disk = devices.disk_info(device)
+        if [p.number for p in disk.partitions] != [1, 2, 3] or disk.partitions[2].start != 40960 * SECTOR:
+            pytest.skip(f"the kernel didn't show the loop device's partitions: {disk.partitions}")
+        if not root:
+            monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)    # sudo, as in a terminal
+        assert cli.main(["create", "-q", str(tmp_path / "small.vdi"), "--from", device, "--partition", "3"]) == 0
+        copy = read_raw(qemu, tmp_path / "small.vdi", "vdi", tmp_path)
+        assert len(copy) == 7 * MIB and copy[MIB:6 * MIB] == data[40960 * SECTOR:51200 * SECTOR]
+        # a partition's own name stands for its disk with that partition
+        part = f"/dev/{disk.partitions[2].name}"
+        info = inspect_image(part, qemu)
+        assert info.ok and info.layout is not None and info.layout.names == disk.partitions[2].name, info.errors
+    finally:
+        if shutil.which("partx"):
+            _run(["partx", "-d", device], root)
+        _run(["losetup", "-d", device], root)

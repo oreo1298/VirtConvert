@@ -2,9 +2,11 @@
 
 Reading tells whether the guest boots with UEFI (GPT) or BIOS (MBR), which
 decides "Enable EFI" in VirtualBox and the generation of a Hyper-V VM.
-Writing makes the GPT or MBR of a new disk (create.py), and moves a GPT's
-backup to the end of a physical disk of another size than the virtual disk
-written onto it (writedisk.py).
+Writing makes the GPT or MBR of a new disk (create.py) or of a copy of some
+partitions of a physical disk (devices.PartitionReader, which reads the disk's
+own entries with read_entries), and moves a GPT's backup to the end of a
+physical disk of another size than the virtual disk written onto it
+(writedisk.py).
 """
 
 from __future__ import annotations
@@ -187,14 +189,26 @@ def gpt_table(disk_size: int, partitions: list[tuple[int, int, str, str]]) -> di
     """A protective MBR and the primary and backup GPT, as {offset: bytes}.
 
     PARTITIONS: (offset, length, type GUID, name) in bytes."""
-    lbas = disk_size // SECTOR
-    entries_sectors = GPT_ENTRIES * 128 // SECTOR
-    entries = bytearray(GPT_ENTRIES * 128)
-    for i, (offset, length, type_guid, name) in enumerate(partitions):
-        struct.pack_into("<16s16sQQQ", entries, i * 128, uuid.UUID(type_guid).bytes_le, uuid.uuid4().bytes_le,
+    entries = []
+    for offset, length, type_guid, name in partitions:
+        entry = bytearray(128)
+        struct.pack_into("<16s16sQQQ", entry, 0, uuid.UUID(type_guid).bytes_le, uuid.uuid4().bytes_le,
                          offset // SECTOR, (offset + length) // SECTOR - 1, 0)
         label = _utf16_cut(name, 36).encode("utf-16-le")
-        entries[i * 128 + 56:i * 128 + 56 + len(label)] = label
+        entry[56:56 + len(label)] = label
+        entries.append(bytes(entry))
+    return gpt_with_entries(disk_size, entries)
+
+
+def gpt_with_entries(disk_size: int, entries: list[bytes]) -> dict[int, bytes]:
+    """A protective MBR and the primary and backup GPT holding ENTRIES (128-byte partition entries
+    that already say where their partition is, in 512-byte sectors), as {offset: bytes}."""
+    lbas = disk_size // SECTOR
+    entries_sectors = GPT_ENTRIES * 128 // SECTOR
+    array = bytearray(GPT_ENTRIES * 128)
+    for i, entry in enumerate(entries[:GPT_ENTRIES]):
+        array[i * 128:(i + 1) * 128] = entry[:128]
+    entries = array
     entries_crc = zlib.crc32(entries)
     disk_guid = uuid.uuid4().bytes_le
 
@@ -237,17 +251,77 @@ def _chs(lba: int) -> bytes:
     return bytes((head, (sector + 1) | ((cylinder >> 2) & 0xC0), cylinder & 0xFF))
 
 
-def mbr_table(partitions: list[tuple[int, int, int]], signature: bool = True) -> dict[int, bytes]:
-    """An MBR without boot code. PARTITIONS: (offset, length, type) in bytes, at most four."""
+def mbr_table(partitions: list[tuple], signature: bool = True) -> dict[int, bytes]:
+    """An MBR without boot code. PARTITIONS: (offset, length, type[, active]) in bytes, at most four."""
     mbr = bytearray(SECTOR)
     if signature:       # Windows identifies MBR disks by this number
         mbr[440:444] = (int.from_bytes(os.urandom(4), "little") | 1).to_bytes(4, "little")
-    for i, (offset, length, ptype) in enumerate(partitions):
+    for i, (offset, length, ptype, *active) in enumerate(partitions):
         first, count = offset // SECTOR, length // SECTOR
-        struct.pack_into("<B3sB3sII", mbr, 446 + 16 * i, 0, _chs(first), ptype, _chs(first + count - 1),
-                         first, count)
+        struct.pack_into("<B3sB3sII", mbr, 446 + 16 * i, 0x80 if active and active[0] else 0, _chs(first), ptype,
+                         _chs(first + count - 1), first, count)
     mbr[510:512] = b"\x55\xaa"
     return {0: bytes(mbr)}
+
+
+EXTENDED_TYPES = (0x05, 0x0F, 0x85)     # an MBR partition that holds the logical ones
+
+
+@dataclass
+class TableEntry:
+    """A partition as the disk's own table has it (read_entries)."""
+    number: int                  # as Linux counts: GPT entry index + 1; MBR 1-4, logical ones from 5
+    start: int                   # bytes
+    size: int                    # bytes
+    gpt_entry: bytes = b""       # the 128-byte GPT entry (type, unique GUID, attributes, name)
+    mbr_type: int = 0
+    active: bool = False
+
+
+def read_entries(read: Callable[[int, int], bytes], sector: int) -> tuple[str, dict[int, TableEntry]]:
+    """The partitions of a disk from its own table: ('gpt' | 'mbr' | 'none', {number: entry}).
+    READ(offset, length) reads the disk; SECTOR is its logical sector size. MBR logical partitions
+    are found through the extended partition's chain of EBRs."""
+    head = read(0, 2 * sector)
+    found: dict[int, TableEntry] = {}
+    if head[sector:sector + 8] == b"EFI PART":
+        entries_lba, count, entry_size = struct.unpack_from("<QII", head, sector + 72)
+        if entry_size < 128 or not 0 < count <= 1024:
+            return "gpt", found
+        array = read(entries_lba * sector, count * entry_size)
+        for i in range(count):
+            raw = array[i * entry_size:i * entry_size + 128]
+            if len(raw) < 128 or not any(raw[:16]):
+                continue
+            first, last = struct.unpack_from("<QQ", raw, 32)
+            found[i + 1] = TableEntry(i + 1, first * sector, (last - first + 1) * sector, gpt_entry=bytes(raw))
+        return "gpt", found
+    if head[510:512] != b"\x55\xaa":
+        return "none", found
+    extended = None
+    for i in range(4):
+        e = head[446 + 16 * i:462 + 16 * i]
+        ptype, (lba, count) = e[4], struct.unpack_from("<II", e, 8)
+        if ptype == 0 or count == 0:
+            continue
+        if ptype in EXTENDED_TYPES:
+            extended = lba
+        found[i + 1] = TableEntry(i + 1, lba * sector, count * sector, mbr_type=ptype, active=e[0] == 0x80)
+    ebr, number, seen = extended, 5, set()
+    while ebr is not None and ebr not in seen and number < 5 + 256:
+        seen.add(ebr)
+        block = read(ebr * sector, 512)
+        if len(block) < 512 or block[510:512] != b"\x55\xaa":
+            break
+        here, nxt = block[446:462], block[462:478]
+        lba, count = struct.unpack_from("<II", here, 8)
+        if here[4] and count:
+            found[number] = TableEntry(number, (ebr + lba) * sector, count * sector, mbr_type=here[4],
+                                       active=here[0] == 0x80)
+            number += 1
+        next_lba = struct.unpack_from("<I", nxt, 8)[0]
+        ebr = extended + next_lba if nxt[4] and next_lba else None
+    return "mbr", found
 
 
 def gpt_room(sector: int, entries_bytes: int = GPT_ENTRIES * 128) -> int:
